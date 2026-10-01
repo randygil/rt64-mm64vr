@@ -62,13 +62,27 @@ else()
     endif()
 endif()
 
+# Cross compiling for Android from a Windows host uses the Windows DXC binary.
+if (ANDROID AND CMAKE_HOST_WIN32)
+    set (DXC "${PROJECT_SOURCE_DIR}/src/contrib/dxc/bin/x64/dxc.exe")
+endif()
+
 set(ZSTD_LEGACY_SUPPORT OFF)
 set(ZSTD_BUILD_STATIC ON)
 set(ZSTD_BUILD_SHARED OFF)
 
-add_subdirectory(src/tools/file_to_c)
+# When cross compiling, file_to_c must be a host executable provided by the parent project.
+if (NOT TARGET file_to_c)
+    add_subdirectory(src/tools/file_to_c)
+endif()
 add_subdirectory(src/contrib/re-spirv)
-add_subdirectory(src/contrib/nativefiledialog-extended)
+if (ANDROID)
+    # There are no native file dialogs on Android.
+    add_library(nfd STATIC "${PROJECT_SOURCE_DIR}/src/android/nfd_stub.cpp")
+    target_include_directories(nfd PUBLIC "${PROJECT_SOURCE_DIR}/src/contrib/nativefiledialog-extended/src/include")
+else()
+    add_subdirectory(src/contrib/nativefiledialog-extended)
+endif()
 add_subdirectory(src/contrib/zstd/build/cmake)
 
 if (CMAKE_SYSTEM_NAME MATCHES "Linux" AND RT64_SDL_WINDOW_VULKAN)
@@ -286,6 +300,9 @@ if (WIN32)
     set(SDL2_INCLUDE_DIRS "${PROJECT_SOURCE_DIR}/src/contrib/mupen64plus-win32-deps/SDL2-2.26.3/include")
     set(SDL2_LIBRARIES "SDL2" "SDL2main")
     link_directories("${PROJECT_SOURCE_DIR}/src/contrib/mupen64plus-win32-deps/SDL2-2.26.3/lib/x64")
+elseif (TARGET SDL2::SDL2)
+    set(SDL2_INCLUDE_DIRS "$<TARGET_PROPERTY:SDL2::SDL2,INTERFACE_INCLUDE_DIRECTORIES>")
+    set(SDL2_LIBRARIES SDL2::SDL2)
 else()
     find_package(SDL2 REQUIRED)
 endif()
@@ -443,8 +460,10 @@ target_link_libraries(rt64 libzstd_static)
 target_link_libraries(rt64 plume)
 
 # Add tools.
-add_subdirectory(src/tools/texture_hasher)
-add_subdirectory(src/tools/texture_packer)
+if (NOT ANDROID)
+    add_subdirectory(src/tools/texture_hasher)
+    add_subdirectory(src/tools/texture_packer)
+endif()
 
 # Add any Apple-specific source files and libraries
 if (APPLE)

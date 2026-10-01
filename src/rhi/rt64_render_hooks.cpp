@@ -26,4 +26,20 @@ namespace RT64 {
         draw = draw_;
         deinit = deinit_;
     }
+
+    static RenderHookWorkload *workloadCreatedHook = nullptr;
+    static RenderHookWorkload *workloadPresentHook = nullptr;
+
+    RenderHookWorkload *GetRenderHookWorkloadCreated() {
+        return workloadCreatedHook;
+    }
+
+    RenderHookWorkload *GetRenderHookWorkloadPresent() {
+        return workloadPresentHook;
+    }
+
+    void SetRenderHookWorkload(RenderHookWorkload *created, RenderHookWorkload *present) {
+        workloadCreatedHook = created;
+        workloadPresentHook = present;
+    }
 };

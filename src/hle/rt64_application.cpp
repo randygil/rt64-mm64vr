@@ -331,7 +331,13 @@ namespace RT64 {
             swapChainDesc.enablePresentWait = true;
         }
 
-        swapChain = presentGraphicsWorker->commandQueue->createSwapChain(swapChainDesc);
+        if (core.createExternalSwapChain) {
+            swapChain = core.createExternalSwapChain(renderInterface.get(), device.get(), presentGraphicsWorker->commandQueue.get());
+        }
+
+        if (swapChain == nullptr) {
+            swapChain = presentGraphicsWorker->commandQueue->createSwapChain(swapChainDesc);
+        }
 
         // Before configuring multisampling, make sure the device actually supports it for the formats we'll use. If it doesn't, turn off antialiasing in the configuration.
         const RenderSampleCounts colorSampleCounts = device->getSampleCountsSupported(RenderTarget::colorBufferFormat(usesHDR));
@@ -391,7 +397,7 @@ namespace RT64 {
         sharedQueueResources->setEmulatorConfig(emulatorConfig);
         sharedQueueResources->setEnhancementConfig(enhancementConfig);
         sharedQueueResources->setSwapChainSize(swapChain->getWidth(), swapChain->getHeight());
-        sharedQueueResources->setSwapChainRate(appWindow->getRefreshRate());
+        sharedQueueResources->setSwapChainRate(core.createExternalSwapChain && (swapChain->getRefreshRate() > 0) ? swapChain->getRefreshRate() : appWindow->getRefreshRate());
         sharedQueueResources->renderTargetManager.setMultisampling(multisampling);
         sharedQueueResources->renderTargetManager.setUsesHDR(usesHDR);
 

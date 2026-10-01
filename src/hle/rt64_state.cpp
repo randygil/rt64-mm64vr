@@ -19,6 +19,7 @@
 #include "preset/rt64_preset_light.h"
 
 #include "rt64_application.h"
+#include "rhi/rt64_render_hooks.h"
 #include "rt64_interpreter.h"
 
 //#define ASSERT_ON_BLENDER_EMULATION
@@ -2630,6 +2631,9 @@ namespace RT64 {
     void State::advanceWorkload(Workload &workload, bool paused) {
         workload.workloadId = ++workloadId;
         workload.presentId = presentId;
+        if (RenderHookWorkload *createdHook = GetRenderHookWorkloadCreated()) {
+            createdHook(workload.workloadId);
+        }
         workload.debuggerCamera = debuggerInspector.camera;
         workload.debuggerRenderer = debuggerInspector.renderer;
         workload.paused = paused;

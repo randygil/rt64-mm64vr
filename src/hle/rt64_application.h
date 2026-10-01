@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <functional>
+
 #include <sstream>
 #include <filesystem>
 
@@ -89,6 +91,10 @@ namespace RT64 {
             uint32_t *VI_Y_SCALE_REG;
 
             void (*checkInterrupts)();
+
+            // Optional. Creates the swap chain RT64 presents to instead of one for the window, e.g. one backed
+            // by the images of an OpenXR session. Called during setup once the device exists.
+            std::function<std::unique_ptr<RenderSwapChain>(RenderInterface *renderInterface, RenderDevice *device, RenderCommandQueue *commandQueue)> createExternalSwapChain;
 
             VI decodeVI() const;
         };

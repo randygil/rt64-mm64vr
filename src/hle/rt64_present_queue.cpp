@@ -93,6 +93,10 @@ namespace RT64 {
     }
 
     void PresentQueue::threadPresent(const Present &present, bool &swapChainValid) {
+        if (RenderHookWorkload *presentHook = GetRenderHookWorkloadPresent()) {
+            presentHook(present.workloadId);
+        }
+
         FramebufferManager &fbManager = ext.sharedResources->framebufferManager;
         RenderTargetManager &targetManager = ext.sharedResources->renderTargetManager;
         const bool usingMSAA = (targetManager.multisampling.sampleCount > 1);
