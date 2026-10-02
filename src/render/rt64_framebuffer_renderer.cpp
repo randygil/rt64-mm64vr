@@ -2281,6 +2281,7 @@ namespace RT64 {
                                 gbufferFlags |= alphaTested ? LIGHTING_GBUFFER_ALPHA_TESTED : 0;
                                 gbufferFlags |= rspLit ? LIGHTING_GBUFFER_RSP_LIT : 0;
                                 gbufferFlags |= (alphaTested && !rspLit && call.shaderDesc.flags.usesTexture0) ? LIGHTING_GBUFFER_FOLIAGE : 0;
+                                gbufferFlags |= (!alphaTested && call.shaderDesc.flags.usesTexture0) ? LIGHTING_GBUFFER_BUMP : 0;
                                 lighting->addGBufferDraw(uint32_t(lightingSceneIndex), callInstanceIndex, gbufferFlags);
 
                                 // Geometry without lighting has no normals: smooth ones are computed from its faces. Large

@@ -92,6 +92,29 @@ void PSMain(in float4 vertexPosition : SV_POSITION, in float2 vertexUV : TEXCOOR
         }
     }
 
+    // Relief from the brightness of the texture, treated as a height map: the normal tilts along the directions the
+    // texture coordinates follow on the surface (cotangent frame from the screen space derivatives).
+    if (gConstants.flags & LIGHTING_GBUFFER_BUMP) {
+        const float2 ddxUV = ddx(vertexUV);
+        const float2 ddyUV = ddy(vertexUV);
+        const float3 LumaWeights = float3(0.2126f, 0.7152f, 0.0722f);
+        const float heightCenter = dot(lightingSampleTexture0(gConstants.renderIndex, vertexUV, ddxUV, ddyUV).rgb, LumaWeights);
+        const float heightU = dot(lightingSampleTexture0(gConstants.renderIndex, vertexUV + float2(1.0f, 0.0f), ddxUV, ddyUV).rgb, LumaWeights);
+        const float heightV = dot(lightingSampleTexture0(gConstants.renderIndex, vertexUV + float2(0.0f, 1.0f), ddxUV, ddyUV).rgb, LumaWeights);
+        const float3 dp1 = ddx(worldPosition);
+        const float3 dp2 = ddy(worldPosition);
+        const float3 dp2Perp = cross(dp2, normal);
+        const float3 dp1Perp = cross(normal, dp1);
+        float3 tangentU = dp2Perp * ddxUV.x + dp1Perp * ddyUV.x;
+        float3 tangentV = dp2Perp * ddxUV.y + dp1Perp * ddyUV.y;
+        const float lengthU = length(tangentU);
+        const float lengthV = length(tangentV);
+        if ((lengthU > 1e-12f) && (lengthV > 1e-12f)) {
+            const float2 slope = clamp(float2(heightU - heightCenter, heightV - heightCenter) * gConstants.bumpStrength, -1.0f, 1.0f);
+            normal = normalize(normal - (tangentU / lengthU) * slope.x - (tangentV / lengthV) * slope.y);
+        }
+    }
+
     float flags = 0.0f;
 #ifdef FOLIAGE
     if (gConstants.flags & LIGHTING_GBUFFER_FOLIAGE) {

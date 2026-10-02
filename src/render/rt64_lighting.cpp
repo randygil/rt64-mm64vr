@@ -442,6 +442,7 @@ namespace RT64 {
 
     void LightingRenderer::reset() {
         gbufferEnabled = (enhancementValue("RT64_LIGHT_GBUFFER", 1.0f) > 0.0f);
+        bumpEnabled = (getRasterLightingQuality() >= 1) && (enhancementValue("RT64_LIGHT_BUMP", 0.0f) > 0.0f);
         scenes.clear();
         casters.clear();
         paramsVector.clear();
@@ -573,6 +574,11 @@ namespace RT64 {
         assert(sceneIndex < scenes.size());
         if (!gbufferEnabled) {
             return;
+        }
+
+        // Relief from the textures costs a few extra samples per pixel, so it's left out of the low quality preset.
+        if (!bumpEnabled) {
+            flags &= ~LIGHTING_GBUFFER_BUMP;
         }
 
         if (!foliageNormalsSupported) {
@@ -892,7 +898,7 @@ namespace RT64 {
             gbufferCB.cameraPosition = scene.params.cameraPosition;
             gbufferCB.screenScale = scene.screenScale;
             gbufferCB.screenOffset = scene.screenOffset;
-            gbufferCB.padding = 0;
+            gbufferCB.bumpStrength = enhancementValue("RT64_LIGHT_BUMP", 0.0f);
             // Draw calls without flags only need the vertices, so consecutive ranges of indices are drawn together.
             const RenderPipeline *previousPipeline = nullptr;
             uint32_t pendingIndexStart = 0;

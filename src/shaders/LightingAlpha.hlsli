@@ -83,6 +83,27 @@ float lightingCoverageAlpha(uint renderIndex, float2 vertexUV, float4 vertexColo
     return otherMode.cvgXAlpha() ? combinerColor.a : 1.0f;
 }
 
+// Color of the first texture of the draw call at the given coordinates, sampled like the raster shaders do.
+float4 lightingSampleTexture0(uint renderIndex, float2 vertexUV, float2 ddxUV, float2 ddyUV) {
+    const uint instanceIndex = instanceRenderIndices[renderIndex].instanceIndex;
+    const RenderParams rp = DynamicRenderParams[instanceIndex];
+    const OtherMode otherMode = { rp.omL, rp.omH };
+    int tileIndex0 = 0;
+    int tileIndex1 = 1;
+    float lodFraction;
+    computeLOD(otherMode, instanceRenderIndices[renderIndex].rdpTileCount, instanceRDPParams[instanceIndex].primLOD, 1.0f, ddxUV.x, ddyUV.y, tileIndex0, tileIndex1, lodFraction);
+
+    const uint globalTileIndex = instanceRenderIndices[renderIndex].rdpTileIndex + tileIndex0;
+    RDPTile rdpTile = RDPTiles[globalTileIndex];
+    if (!renderFlagDynamicTiles(rp.flags)) {
+        rdpTile.cms = renderCMS0(rp.flags);
+        rdpTile.cmt = renderCMT0(rp.flags);
+        rdpTile.nativeSampler = renderFlagNativeSampler0(rp.flags);
+    }
+
+    return sampleTexture(otherMode, rp.flags, vertexUV, ddxUV, ddyUV, rdpTile, GPUTiles[globalTileIndex], false);
+}
+
 // Whether the pixel of the draw call would be discarded. Coverage below the threshold is considered empty.
 bool lightingPixelDiscarded(uint renderIndex, float2 vertexUV, float4 vertexColor, float coverageThreshold) {
     bool alphaCompareFailed;

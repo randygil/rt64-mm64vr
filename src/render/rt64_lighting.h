@@ -193,6 +193,7 @@ namespace RT64 {
         uint32_t normalBufferHeight = 0;
         bool foliageNormalsSupported = false;
         bool gbufferEnabled = true;
+        bool bumpEnabled = true;
         std::unique_ptr<RenderPipelineLayout> aoPipelineLayout;
         std::unique_ptr<RenderPipeline> aoPipeline;
         std::unique_ptr<RenderPipeline> aoPipelineMS;

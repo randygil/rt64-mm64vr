@@ -14,6 +14,7 @@
 #define LIGHTING_GBUFFER_ALPHA_TESTED   0x1
 #define LIGHTING_GBUFFER_RSP_LIT        0x2
 #define LIGHTING_GBUFFER_FOLIAGE        0x4
+#define LIGHTING_GBUFFER_BUMP           0x8
 
 #ifdef HLSL_CPU
 namespace interop {
@@ -101,7 +102,7 @@ namespace interop {
         uint renderIndex;
         uint indexStart;
         uint flags;
-        uint padding;
+        float bumpStrength;
     };
 
     struct LightingAOCB {
