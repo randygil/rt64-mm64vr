@@ -169,9 +169,10 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
         discard;
     }
 
-    const float depth = (gConstants.surfacePass == 0) ? nearestDepth : farthestDepth;
-    resultCoverage = 0;
-    for (uint s = 0; s < sampleCount; s++) {
+    // Pass 2 is the single pass of the low quality preset: the nearest surface is lit for all the samples.
+    const float depth = (gConstants.surfacePass == 1) ? farthestDepth : nearestDepth;
+    resultCoverage = (gConstants.surfacePass == 2) ? ((1U << sampleCount) - 1U) : 0U;
+    for (uint s = 0; (s < sampleCount) && (gConstants.surfacePass != 2); s++) {
         const float sampleDepth = gDepth.Load(pixel, s);
         const bool nearSurface = (abs(sampleDepth - nearestDepth) <= tolerance);
         const bool farSurface = (abs(sampleDepth - farthestDepth) <= tolerance);

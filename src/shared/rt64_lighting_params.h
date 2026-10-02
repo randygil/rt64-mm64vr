@@ -126,7 +126,8 @@ namespace interop {
         uint sceneIndex;
 
         // With multisampling, the nearest surface of each pixel is lit first (0) and the samples of a farther one at the
-        // edges of objects afterwards (1), so each surface of an edge pixel gets its own light.
+        // edges of objects afterwards (1), so each surface of an edge pixel gets its own light. The low quality preset
+        // lights the nearest surface for all the samples at once instead (2).
         uint surfacePass;
         uint2 padding;
     };

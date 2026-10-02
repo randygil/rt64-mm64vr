@@ -1237,9 +1237,12 @@ namespace RT64 {
         ComposePipelines &pipelines = getComposePipelines(colorTarget->multisampling, colorTarget->format);
         colorTarget->setupColorFramebuffer(worker);
 
+        // The low quality preset lights the nearest surface of each pixel for all its samples in a single pass.
+        const bool multisampling = (colorTarget->multisampling.sampleCount > 1);
+        const bool singlePass = multisampling && (getRasterLightingQuality() == 0);
         interop::LightingComposeCB composeCB;
         composeCB.sceneIndex = sceneIndex;
-        composeCB.surfacePass = 0;
+        composeCB.surfacePass = singlePass ? 2 : 0;
         composeCB.padding = { 0, 0 };
         worker->commandList->setFramebuffer(colorTarget->textureFramebuffer.get());
         worker->commandList->setViewports(RenderViewport(0.0f, 0.0f, float(colorTarget->width), float(colorTarget->height)));
@@ -1252,7 +1255,7 @@ namespace RT64 {
         worker->commandList->drawInstanced(3, 1, 0, 0);
 
         // The farther surfaces of the edge pixels.
-        if (colorTarget->multisampling.sampleCount > 1) {
+        if (multisampling && !singlePass) {
             composeCB.surfacePass = 1;
             worker->commandList->setGraphicsPushConstants(0, &composeCB);
             worker->commandList->drawInstanced(3, 1, 0, 0);

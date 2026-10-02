@@ -159,7 +159,8 @@ namespace RT64 {
         s.bloomRadius = std::max(enhancementValue("RT64_POST_BLOOM_RADIUS", 1.0f), 0.0f);
         const int bloomLevels = int(enhancementValue("RT64_POST_BLOOM_LEVELS", 0.0f));
         s.bloomLevels = uint32_t(std::clamp((bloomLevels > 0) ? bloomLevels : int(QualityBloomLevels[s.quality]), 1, 8));
-        s.shaftsStrength = std::max(enhancementValue("RT64_POST_SHAFTS_STRENGTH", 0.35f), 0.0f);
+        // The light shafts need a radial blur, left out of the low quality preset.
+        s.shaftsStrength = std::max(enhancementValue("RT64_POST_SHAFTS_STRENGTH", (s.quality == 0) ? 0.0f : 0.35f), 0.0f);
         s.shaftsDensity = std::clamp(enhancementValue("RT64_POST_SHAFTS_DENSITY", 0.9f), 0.05f, 1.0f);
         s.shaftsFalloff = std::max(enhancementValue("RT64_POST_SHAFTS_FALLOFF", 1.0f), 0.0f);
         s.shaftsThreshold = std::clamp(enhancementValue("RT64_POST_SHAFTS_THRESHOLD", 0.35f), 0.0f, 0.99f);
