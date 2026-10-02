@@ -493,6 +493,13 @@ namespace RT64 {
         state->skyBackgroundHint = present;
     }
 
+    void Application::setFocusPosition(const float *position) {
+        state->focusPositionValid = (position != nullptr);
+        if (position != nullptr) {
+            memcpy(state->focusPosition, position, sizeof(state->focusPosition));
+        }
+    }
+
     void Application::setWorldViewRotation(const float *rotation) {
         state->worldViewRotationValid = (rotation != nullptr);
         if (rotation != nullptr) {

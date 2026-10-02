@@ -114,6 +114,10 @@ namespace RT64 {
 
         // The host knows the frame has a sky RT64 can't see (see Application::setSkyBackgroundHint).
         bool skyBackgroundHint = false;
+
+        // What the camera follows, in the space of the geometry (see Application::setFocusPosition).
+        bool focusPositionValid = false;
+        float focusPosition[3] = {};
         uint32_t framesWithoutSky = 0;
         uint32_t displayListAddress;
         uint64_t displayListCounter;

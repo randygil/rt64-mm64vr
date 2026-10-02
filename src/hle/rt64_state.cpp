@@ -1836,7 +1836,22 @@ namespace RT64 {
                         forwardDir = forwardDir - upDir * float(hlslpp::dot(forwardDir, upDir));
                         const float forwardLength = float(hlslpp::length(forwardDir));
                         forwardDir = (forwardLength > 1e-4f) ? (forwardDir / forwardLength) : hlslpp::float3(0.0f, 0.0f, 0.0f);
-                        const hlslpp::float3 lightPos = cameraPos + upDir * enhancementValue("RT64_RT_INDOOR_LIGHT_HEIGHT", 450.0f) + forwardDir * enhancementValue("RT64_RT_INDOOR_LIGHT_FORWARD", 550.0f);
+                        hlslpp::float3 lightPos = cameraPos + upDir * enhancementValue("RT64_RT_INDOOR_LIGHT_HEIGHT", 450.0f) + forwardDir * enhancementValue("RT64_RT_INDOOR_LIGHT_FORWARD", 550.0f);
+
+                        // When the host tells where the player is, the light floats above them instead, a little towards
+                        // the camera so the side of the player that's seen is lit. A position far from the camera is
+                        // stale (the player isn't in the scene) and is ignored.
+                        if (focusPositionValid) {
+                            const hlslpp::float3 focus = { focusPosition[0], focusPosition[1], focusPosition[2] };
+                            hlslpp::float3 toCamera = cameraPos - focus;
+                            const float focusDistance = float(hlslpp::length(toCamera));
+                            if (focusDistance < enhancementValue("RT64_RT_INDOOR_FOCUS_MAX_DISTANCE", 2500.0f)) {
+                                toCamera = toCamera - upDir * float(hlslpp::dot(toCamera, upDir));
+                                const float toCameraLength = float(hlslpp::length(toCamera));
+                                toCamera = (toCameraLength > 1e-4f) ? (toCamera / toCameraLength) : hlslpp::float3(0.0f, 0.0f, 0.0f);
+                                lightPos = focus + upDir * enhancementValue("RT64_RT_INDOOR_FOCUS_HEIGHT", 350.0f) + toCamera * std::min(enhancementValue("RT64_RT_INDOOR_FOCUS_TOWARDS_CAMERA", 200.0f), toCameraLength);
+                            }
+                        }
                         const float lightRadius = enhancementValue("RT64_RT_INDOOR_LIGHT_RADIUS", 3000.0f);
                         interop::PointLight light;
                         light.position = { lightPos.x, lightPos.y, lightPos.z };

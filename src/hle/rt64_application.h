@@ -180,6 +180,10 @@ namespace RT64 {
         // Tells that the game has a sky behind the frame being processed even though RT64 can't see it (e.g. the host
         // removed the 2D sky because it doesn't work in a VR headset), so the scene is lit as an exterior.
         void setSkyBackgroundHint(bool present);
+
+        // Position of what the camera follows (usually the player) in the space the geometry is drawn in, so effects
+        // like the light carried in interiors can stay around it. Pass nullptr if it's unknown.
+        void setFocusPosition(const float *position);
         void processDisplayLists(uint8_t *memory, uint32_t dlStartAddress, uint32_t dlEndAddress, bool isHLE);
         void updateScreen();
         void destroyShaderCache();
