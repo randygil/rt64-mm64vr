@@ -14,7 +14,7 @@ namespace RT64 {
         // makes the shadows rotate with the camera. The sun uses a fixed direction in the world unless this is enabled.
         bool sunUsesGameLightDirection = false;
         float sunAzimuthDegrees = 35.0f;
-        float sunElevationDegrees = 22.0f;
+        float sunElevationDegrees = 32.0f;
         bool rspLightAsDiffuse = true;
         float rspLightIntensity = 1.0f;
     };

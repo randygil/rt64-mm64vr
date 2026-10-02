@@ -284,6 +284,18 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
     else if (debugView == 6) {
         return float4(occlusion.xxx, 1.0f);
     }
+    else if (debugView == 7) {
+        // Distance from the receiver to the occluder stored in the shadow map (red: occluder in front, green: behind),
+        // and blue where the pixel has a stored normal.
+        const float4 shadowPosition = mul(params.shadowMatrix, float4(position, 1.0f));
+        const float3 shadowNdc = shadowPosition.xyz / shadowPosition.w;
+        const float2 shadowUV = shadowNdc.xy * float2(0.5f, -0.5f) + 0.5f;
+        uint shadowWidth, shadowHeight;
+        gShadowMap.GetDimensions(shadowWidth, shadowHeight);
+        const float storedDepth = gShadowMap.Load(int3(int2(shadowUV * float2(shadowWidth, shadowHeight)), 0));
+        const float distance = (shadowNdc.z - storedDepth) * params.shadowMapParams.w;
+        return float4(saturate(distance / 200.0f), saturate(-distance / 200.0f), storedNormal ? 1.0f : 0.0f, 1.0f);
+    }
 
     return float4(saturate(factor * 0.5f), 1.0f);
 }
