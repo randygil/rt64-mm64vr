@@ -480,7 +480,8 @@ namespace RT64 {
     LightingSky::~LightingSky() { }
 
     bool LightingSky::enabled() const {
-        return enhancementValue("RT64_SKY_ENABLE", 1.0f) > 0.0f;
+        // The host's sky option is shared with the path tracer's procedural sky.
+        return isProceduralSkyEnabled() && (enhancementValue("RT64_SKY_ENABLE", 1.0f) > 0.0f);
     }
 
     void LightingSky::record(RenderWorker *worker, const LightingSkyDesc &desc) {

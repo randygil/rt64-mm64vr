@@ -173,6 +173,17 @@ namespace RT64 {
         s.vignette = std::max(enhancementValue("RT64_POST_VIGNETTE", 0.1f), 0.0f);
         s.dither = std::max(enhancementValue("RT64_POST_DITHER", 1.0f), 0.0f);
 
+        // The host's choice of how strong the effects are (shared with the path tracer's effects).
+        const float intensity = getEnhancementIntensity();
+        s.bloomStrength *= intensity;
+        s.shaftsStrength *= intensity;
+        s.sharpen *= intensity;
+        s.contrast *= intensity;
+        s.vibrance *= intensity;
+        s.saturation *= intensity;
+        s.temperature *= intensity;
+        s.vignette *= intensity;
+
         // Dithering alone doesn't justify the pass.
         const bool anyEffect = (s.bloomStrength > 0.0f) || (s.shaftsStrength > 0.0f) || (s.sharpen > 0.0f) || (s.contrast != 0.0f) ||
             (s.vibrance != 0.0f) || (s.saturation != 0.0f) || (s.temperature != 0.0f) || (s.vignette > 0.0f);

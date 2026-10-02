@@ -82,6 +82,10 @@ namespace RT64 {
         enhancementIntensity = std::clamp(intensity, 0.0f, 1.0f);
     }
 
+    float getEnhancementIntensity() {
+        return enhancementIntensity;
+    }
+
     static std::atomic<bool> proceduralSkyEnabled = true;
 
 #if RT_ENABLED
@@ -145,6 +149,10 @@ namespace RT64 {
 
     void setProceduralSkyEnabled(bool enabled) {
         proceduralSkyEnabled = enabled;
+    }
+
+    bool isProceduralSkyEnabled() {
+        return proceduralSkyEnabled;
     }
 
     // Values of the visual enhancements. They can be overridden with environment variables or with the file pointed
