@@ -9,6 +9,7 @@
 
 #include "shared/rt64_lighting_params.h"
 
+#include "Depth.hlsli"
 #include "LightingCommon.hlsli"
 
 [[vk::push_constant]] ConstantBuffer<LightingComposeCB> gConstants : register(b0, space0);
@@ -137,20 +138,73 @@ float sampleAmbientOcclusion(LightingParams params, float2 pixelPosition, float 
     return sum / weightSum;
 }
 
-float4 PSMain(in float4 pixelPosition : SV_POSITION) : SV_TARGET {
+float4 PSMain(in float4 pixelPosition : SV_POSITION
+#ifdef MULTISAMPLING
+    , out uint resultCoverage : SV_Coverage
+#endif
+    ) : SV_TARGET
+{
     const LightingParams params = gLightingParams[gConstants.sceneIndex];
     const int2 pixel = int2(pixelPosition.xy);
     if (any(pixelPosition.xy < params.viewportRect.xy) || any(pixelPosition.xy >= params.viewportRect.zw)) {
         discard;
     }
 
+#ifdef MULTISAMPLING
+    // Edge pixels have samples of different surfaces. The nearest one is lit in the first pass and the farthest one in
+    // the second, each writing only to its own samples.
+    const uint sampleCount = params.settings.z;
+    float nearestDepth = 1.0f;
+    float farthestDepth = 0.0f;
+    for (uint s = 0; s < sampleCount; s++) {
+        const float sampleDepth = gDepth.Load(pixel, s);
+        nearestDepth = min(nearestDepth, sampleDepth);
+        farthestDepth = max(farthestDepth, sampleDepth);
+    }
+
+    const float tolerance = max(CoplanarDepthTolerance(nearestDepth) * 4.0f, 1e-5f);
+    const bool edgePixel = (farthestDepth - nearestDepth) > tolerance;
+    if ((gConstants.surfacePass == 1) && !edgePixel) {
+        discard;
+    }
+
+    const float depth = (gConstants.surfacePass == 0) ? nearestDepth : farthestDepth;
+    resultCoverage = 0;
+    for (uint s = 0; s < sampleCount; s++) {
+        const float sampleDepth = gDepth.Load(pixel, s);
+        const bool nearSurface = (abs(sampleDepth - nearestDepth) <= tolerance);
+        const bool farSurface = (abs(sampleDepth - farthestDepth) <= tolerance);
+        if ((gConstants.surfacePass == 0) ? nearSurface : (farSurface && !nearSurface)) {
+            resultCoverage |= (1U << s);
+        }
+    }
+#else
     const float depth = loadDepth(pixel);
+#endif
+
     if (lightingIsBackground(params, depth)) {
         discard;
     }
 
     const float3 position = lightingWorldPosition(params, pixelPosition.xy, depth);
-    const float4 normalSample = gNormalBuffer.Load(int3(pixel, 0));
+    // The normal buffer stores the nearest surface of each pixel. The farther surface of an edge pixel takes the normal
+    // of a neighbor that shows it, so it's lit like the rest of that surface.
+    float4 normalSample = gNormalBuffer.Load(int3(pixel, 0));
+#ifdef MULTISAMPLING
+    if (gConstants.surfacePass == 1) {
+        const int2 Neighbors[4] = { int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1) };
+        normalSample = float4(0.0f, 0.0f, 0.0f, 0.0f);
+        for (uint n = 0; n < 4; n++) {
+            const int2 neighborPixel = pixel + Neighbors[n];
+            const float neighborDepth = gDepth.Load(neighborPixel, 0);
+            const float4 neighborNormal = gNormalBuffer.Load(int3(neighborPixel, 0));
+            if ((abs(neighborDepth - depth) <= tolerance * 4.0f) && (neighborNormal.w > 0.5f)) {
+                normalSample = neighborNormal;
+                break;
+            }
+        }
+    }
+#endif
     const bool storedNormal = (normalSample.w > 0.5f);
     const float3 normal = storedNormal ? lightingDecodeNormal(normalSample.xy) : normalFromDepth(params, pixel, depth, position);
     const float foliageRadius = storedNormal ? (normalSample.z * 4096.0f) : 0.0f;

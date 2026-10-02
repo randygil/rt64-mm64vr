@@ -275,7 +275,7 @@ namespace RT64 {
         pss << std::string_view(RenderParamsText, sizeof(RenderParamsText));
         pss << "RenderParams getRenderParams() {" + renderParamsCode + "; return rp; }";
         pss <<
-            "bool RasterPS(const RenderParams, float4, float2, float4, float4, bool, out float4, out float4);"
+            "bool RasterPS(const RenderParams, float4, float2, float4, float4, bool, out float4, out float4, out uint);"
             "[shader(\"pixel\")]"
             "void PSMain("
             "  in float4 vertexPosition : SV_POSITION"
@@ -288,8 +288,13 @@ namespace RT64 {
 
         pss <<
             ", out float4 pixelColor : SV_TARGET0"
-            ", out float4 pixelAlpha : SV_TARGET1"
-            ") {";
+            ", out float4 pixelAlpha : SV_TARGET1";
+
+        if (multisampling) {
+            pss << ", out uint pixelCoverage : SV_Coverage";
+        }
+
+        pss << ") {";
 
         if (desc.flags.smoothShade) {
             pss << "float4 vertexFlatColor = vertexSmoothColor;";
@@ -298,10 +303,16 @@ namespace RT64 {
         pss <<
             "   float4 resultColor;"
             "   float4 resultAlpha;"
-            "   if (!RasterPS(getRenderParams(), vertexPosition, vertexUV, vertexSmoothColor, vertexFlatColor, false, resultColor, resultAlpha)) discard;"
+            "   uint resultCoverage;"
+            "   if (!RasterPS(getRenderParams(), vertexPosition, vertexUV, vertexSmoothColor, vertexFlatColor, false, resultColor, resultAlpha, resultCoverage)) discard;"
             "   pixelColor = resultColor;"
-            "   pixelAlpha = resultAlpha;"
-            "}";
+            "   pixelAlpha = resultAlpha;";
+
+        if (multisampling) {
+            pss << "   pixelCoverage = resultCoverage;";
+        }
+
+        pss << "}";
 
         return { vss.str(), pss.str() };
     }

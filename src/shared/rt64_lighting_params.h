@@ -117,7 +117,11 @@ namespace interop {
 
     struct LightingComposeCB {
         uint sceneIndex;
-        uint3 padding;
+
+        // With multisampling, the nearest surface of each pixel is lit first (0) and the samples of a farther one at the
+        // edges of objects afterwards (1), so each surface of an edge pixel gets its own light.
+        uint surfacePass;
+        uint2 padding;
     };
 #ifdef HLSL_CPU
 };

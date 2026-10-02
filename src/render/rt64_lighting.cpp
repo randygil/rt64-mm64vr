@@ -354,16 +354,9 @@ namespace RT64 {
         const Scene &scene = scenes[sceneIndex];
         RenderTarget *colorTarget = scene.colorTarget;
         const bool multisampling = (colorTarget->multisampling.sampleCount > 1);
-        if ((colorCopyTexture == nullptr) || (colorCopyWidth < colorTarget->width) || (colorCopyHeight < colorTarget->height) || (colorCopyFormat != colorTarget->format)) {
-            colorCopyFramebuffer.reset();
-            colorCopyTexture.reset();
-            colorCopyWidth = std::max(colorCopyWidth, colorTarget->width);
-            colorCopyHeight = std::max(colorCopyHeight, colorTarget->height);
-            colorCopyFormat = colorTarget->format;
-            colorCopyTexture = device->createTexture(RenderTextureDesc::ColorTarget(colorCopyWidth, colorCopyHeight, colorCopyFormat));
-            colorCopyTexture->setName("Lighting Color Copy");
-            const RenderTexture *colorAttachment = colorCopyTexture.get();
-            colorCopyFramebuffer = device->createFramebuffer(RenderFramebufferDesc(&colorAttachment, 1));
+        if ((colorCopyTexture == nullptr) || (colorCopyFormat != colorTarget->format)) {
+            // Scenes of the same frame with a different color format are rare; they skip the passes that need the copy.
+            return nullptr;
         }
 
         std::unique_ptr<RenderPipeline> &pipeline = copyPipelines[{ multisampling ? 1U : 0U, colorTarget->format }];
@@ -421,7 +414,9 @@ namespace RT64 {
         skyDesc.lighting = &scene.params;
         skyDesc.sceneColor = copyColor(worker, sceneIndex);
         skyDesc.time = lightingTime();
-        sky->record(worker, skyDesc);
+        if (skyDesc.sceneColor != nullptr) {
+            sky->record(worker, skyDesc);
+        }
     }
 
     void LightingRenderer::recordPostEffects(RenderWorker *worker, uint32_t sceneIndex) {
@@ -438,7 +433,9 @@ namespace RT64 {
         postDesc.lighting = &scene.params;
         postDesc.sceneColor = copyColor(worker, sceneIndex);
         postDesc.time = lightingTime();
-        postEffects->record(worker, postDesc);
+        if (postDesc.sceneColor != nullptr) {
+            postEffects->record(worker, postDesc);
+        }
     }
 
     LightingRenderer::~LightingRenderer() { }
@@ -649,6 +646,19 @@ namespace RT64 {
         }
 
         frameIndex++;
+
+        RenderFormat colorFormat = scenes[0].colorTarget->format;
+        if ((colorCopyTexture == nullptr) || (colorCopyWidth < normalWidth) || (colorCopyHeight < normalHeight) || (colorCopyFormat != colorFormat)) {
+            colorCopyFramebuffer.reset();
+            colorCopyTexture.reset();
+            colorCopyWidth = std::max(colorCopyWidth, normalWidth);
+            colorCopyHeight = std::max(colorCopyHeight, normalHeight);
+            colorCopyFormat = colorFormat;
+            colorCopyTexture = device->createTexture(RenderTextureDesc::ColorTarget(colorCopyWidth, colorCopyHeight, colorCopyFormat));
+            colorCopyTexture->setName("Lighting Color Copy");
+            const RenderTexture *colorAttachment = colorCopyTexture.get();
+            colorCopyFramebuffer = device->createFramebuffer(RenderFramebufferDesc(&colorAttachment, 1));
+        }
 
         // The shadow map follows the first scene with a sun, usually the main view.
         const Scene *sunScene = nullptr;
@@ -1025,7 +1035,8 @@ namespace RT64 {
 
         interop::LightingComposeCB composeCB;
         composeCB.sceneIndex = sceneIndex;
-        composeCB.padding = { 0, 0, 0 };
+        composeCB.surfacePass = 0;
+        composeCB.padding = { 0, 0 };
         worker->commandList->setFramebuffer(colorTarget->textureFramebuffer.get());
         worker->commandList->setViewports(RenderViewport(0.0f, 0.0f, float(colorTarget->width), float(colorTarget->height)));
         worker->commandList->setScissors(scene.rect);
@@ -1035,6 +1046,13 @@ namespace RT64 {
         worker->commandList->setGraphicsPushConstants(0, &composeCB);
         worker->commandList->setVertexBuffers(0, nullptr, 0, nullptr);
         worker->commandList->drawInstanced(3, 1, 0, 0);
+
+        // The farther surfaces of the edge pixels.
+        if (colorTarget->multisampling.sampleCount > 1) {
+            composeCB.surfacePass = 1;
+            worker->commandList->setGraphicsPushConstants(0, &composeCB);
+            worker->commandList->drawInstanced(3, 1, 0, 0);
+        }
     }
 
     bool LightingRenderer::empty() const {

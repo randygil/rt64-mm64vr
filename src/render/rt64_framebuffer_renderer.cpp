@@ -276,6 +276,7 @@ namespace RT64 {
         frameParams.frameCount = 0;
         frameParams.viewUbershaders = false;
         frameParams.ditherNoiseStrength = 1.0f;
+        frameParams.cutoutAntialiasing = 0;
 
         shaderUploader = std::make_unique<BufferUploader>(worker->device);
         descCommonSet = std::make_unique<FramebufferRendererDescriptorCommonSet>(shaderLibrary->samplerLibrary, worker->device->getCapabilities().raytracing, worker->device);
@@ -319,6 +320,7 @@ namespace RT64 {
 
         frameParams.viewUbershaders = ubershadersVisible;
         frameParams.ditherNoiseStrength = ditherNoiseStrength;
+        frameParams.cutoutAntialiasing = ((lighting != nullptr) && isRasterLightingEnabled() && (enhancementValue("RT64_LIGHT_CUTOUT_AA", 1.0f) > 0.0f)) ? 1 : 0;
         framebufferCount = 0;
 
         // Create dummy color target if it hasn't been created yet.

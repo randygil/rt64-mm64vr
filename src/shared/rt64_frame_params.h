@@ -13,6 +13,9 @@ namespace interop {
         uint frameCount;
         uint viewUbershaders;
         float ditherNoiseStrength;
+
+        // Cutouts write partial coverage at their edges when multisampling instead of being cut per pixel.
+        uint cutoutAntialiasing;
     };
 #ifdef HLSL_CPU
 };

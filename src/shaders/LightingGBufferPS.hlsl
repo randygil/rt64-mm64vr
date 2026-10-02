@@ -25,8 +25,16 @@ ByteAddressBuffer indexBuffer : register(t35, space0);
 #ifdef MULTISAMPLING
 Texture2DMS<float> gBackgroundDepth : register(t2, space3);
 
+// The nearest surface of the pixel, which is the one the composition reads the normal for.
 float sceneDepth(int2 pixel) {
-    return gBackgroundDepth.Load(pixel, 0);
+    uint width, height, sampleCount;
+    gBackgroundDepth.GetDimensions(width, height, sampleCount);
+    float depth = 1.0f;
+    for (uint s = 0; s < sampleCount; s++) {
+        depth = min(depth, gBackgroundDepth.Load(pixel, s));
+    }
+
+    return depth;
 }
 #else
 Texture2D<float> gBackgroundDepth : register(t2, space3);

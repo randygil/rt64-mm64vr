@@ -45,9 +45,23 @@ float sampleBackgroundDepth(int2 pixelPos, uint sampleCount) {
 }
 #endif
 
+// Coverage mask for a cutout edge: the alpha is sharpened with its screen space derivatives so the edge is about one
+// pixel wide, and that fraction of the samples is covered (alpha to coverage done in the shader, as the alpha output
+// holds the coverage of the RDP). The amount is dithered between neighbors so the edge doesn't band.
+uint cutoutCoverageMask(float alpha, float threshold, float2 pixelPosition, uint sampleCount, out bool discarded) {
+    const float edgeWidth = max(fwidth(alpha), 1e-4f);
+    const float coverage = saturate((alpha - threshold) / edgeWidth + 0.5f);
+    const uint2 pixel = uint2(pixelPosition) & 1U;
+    const float dither = (float(pixel.x * 2 + pixel.y) + 0.5f) / 4.0f - 0.5f;
+    const uint coveredSamples = uint(clamp(round(coverage * float(sampleCount) + dither), 0.0f, float(sampleCount)));
+    discarded = (coveredSamples == 0);
+    return (coveredSamples >= 32) ? 0xFFFFFFFFU : ((1U << coveredSamples) - 1U);
+}
+
 LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float2 vertexUV, float4 vertexSmoothColor, float4 vertexFlatColor,
-    bool isFrontFace, out float4 resultColor, out float4 resultAlpha) 
+    bool isFrontFace, out float4 resultColor, out float4 resultAlpha, out uint resultCoverage)
 {
+    resultCoverage = 0xFFFFFFFFU;
     const OtherMode otherMode = { rp.omL, rp.omH };
 #if defined(DYNAMIC_RENDER_PARAMS)
     if ((otherMode.cycleType() != G_CYC_COPY) && renderFlagCulling(rp.flags) && isFrontFace) {
@@ -192,6 +206,11 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
     }
 #endif
     
+    // Cutouts of opaque surfaces get antialiased edges when multisampling (enhanced mode, see FrameParams).
+    const uint sampleCount = 1U << renderFlagSampleCount(rp.flags);
+    const bool cutoutAntialiasing = (FrParams.cutoutAntialiasing != 0) && (sampleCount > 1) && (otherMode.cycleType() != G_CYC_COPY) && !Blender::usesAlphaBlend(otherMode);
+    bool cutoutDiscarded = false;
+
     // Alpha compare.
     if (otherMode.alphaCompare() == G_AC_DITHER) {
         if (alphaCompareValue < nextRand(randomSeed)) {
@@ -199,19 +218,34 @@ LIBRARY_EXPORT bool RasterPS(const RenderParams rp, float4 vertexPosition, float
         }
     }
     else if (otherMode.alphaCompare() == G_AC_THRESHOLD) {
-        if (alphaCompareValue < instanceRDPParams[instanceIndex].blendColor.a) {
+        const float threshold = instanceRDPParams[instanceIndex].blendColor.a;
+        if (cutoutAntialiasing) {
+            resultCoverage &= cutoutCoverageMask(alphaCompareValue, threshold, vertexPosition.xy, sampleCount, cutoutDiscarded);
+            if (cutoutDiscarded) {
+                return false;
+            }
+        }
+        else if (alphaCompareValue < threshold) {
             return false;
         }
     }
-    
+
     // Compute coverage estimation.
     const bool usesHDR = renderFlagUsesHDR(rp.flags);
     const float cvgRange = usesHDR ? 65535.0f : 255.0f;
     float resultCvg = (8.0f / cvgRange) * (otherMode.cvgXAlpha() ? combinerColor.a : 1.0f);
-    
+
     // Discard all pixels without coverage.
     const float CoverageThreshold = 1.0f / cvgRange;
-    if (resultCvg < CoverageThreshold) {
+    if (cutoutAntialiasing && otherMode.cvgXAlpha()) {
+        resultCoverage &= cutoutCoverageMask(combinerColor.a, 1.0f / 8.0f, vertexPosition.xy, sampleCount, cutoutDiscarded);
+        if (cutoutDiscarded) {
+            return false;
+        }
+
+        resultCvg = max(resultCvg, CoverageThreshold);
+    }
+    else if (resultCvg < CoverageThreshold) {
         return false;
     }
     
@@ -284,6 +318,9 @@ void PSMain(
 #endif
     , [[vk::location(0)]] [[vk::index(0)]] out float4 pixelColor : SV_TARGET0
     , [[vk::location(0)]] [[vk::index(1)]] out float4 pixelAlpha : SV_TARGET1
+#if defined(MULTISAMPLING)
+    , out uint pixelCoverage : SV_Coverage
+#endif
 )
 {
 #if !defined(DYNAMIC_RENDER_PARAMS)
@@ -294,12 +331,16 @@ void PSMain(
 #endif
     float4 resultColor;
     float4 resultAlpha;
+    uint resultCoverage;
     float resultDepth;
-    if (!RasterPS(getRenderParams(), vertexPosition, vertexUV, vertexSmoothColor, vertexFlatColor, isFrontFace, resultColor, resultAlpha)) {
+    if (!RasterPS(getRenderParams(), vertexPosition, vertexUV, vertexSmoothColor, vertexFlatColor, isFrontFace, resultColor, resultAlpha, resultCoverage)) {
         discard;
     }
 
     pixelColor = resultColor;
     pixelAlpha = resultAlpha;
+#if defined(MULTISAMPLING)
+    pixelCoverage = resultCoverage;
+#endif
 }
 #endif
