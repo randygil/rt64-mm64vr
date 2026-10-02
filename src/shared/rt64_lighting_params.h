@@ -57,7 +57,8 @@ namespace interop {
         // Position of the camera.
         float4 cameraPosition;
 
-        // Light carried close to the camera for scenes without a sun (xyz position, w radius; w = 0 if disabled).
+        // Light carried close to the camera for scenes without a sun (xyz position, w radius; w = 0 if disabled) and its
+        // color (w exponent of the falloff).
         float4 pointLightPosition;
         float4 pointLightColor;
 
@@ -68,7 +69,8 @@ namespace interop {
         // x size of a shadow map texel in world units, y constant depth bias, z normal offset in texels, w softness in texels.
         float4 shadowParams;
 
-        // x inverse width, y inverse height of the shadow map, z strength of the shadows, w distance where they fade out.
+        // x inverse width, y inverse height of the shadow map, z strength of the shadows, w depth range of the shadow map in
+        // world units.
         float4 shadowMapParams;
 
         // x overall strength, y exposure, z wrap of the sun's diffuse term, w strength of the shading from the normals.
@@ -84,6 +86,10 @@ namespace interop {
         // x strength of the ambient occlusion on the direct light, y strength on foliage, zw size of the ambient occlusion
         // texture.
         float4 aoParams2;
+
+        // Contact shadows: x length of the rays towards the light in world units, y thickness given to the surfaces in the
+        // depth buffer, z strength, w steps of the rays (0 if disabled).
+        float4 contactParams;
 
         // x debug view, y quality level, z sample count of the depth buffer, w flags.
         uint4 settings;

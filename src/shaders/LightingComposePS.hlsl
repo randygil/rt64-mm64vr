@@ -22,7 +22,7 @@ Texture2D<float> gDepth : register(t2, space0);
 Texture2D<float> gShadowMap : register(t3, space0);
 SamplerComparisonState gShadowSampler : register(s4, space0);
 Texture2D<float4> gNormalBuffer : register(t5, space0);
-Texture2D<float2> gAmbientOcclusion : register(t6, space0);
+Texture2D<float4> gAmbientOcclusion : register(t6, space0);
 
 float loadDepth(int2 pixel) {
 #ifdef MULTISAMPLING
@@ -109,28 +109,29 @@ float sampleShadow(LightingParams params, float3 position, float3 normal, float 
     return lerp(1.0f, lit, edgeFade * params.shadowMapParams.z);
 }
 
-// Ambient occlusion from the half resolution texture, taking the neighbors at the most similar distance to the camera.
-float sampleAmbientOcclusion(LightingParams params, float2 pixelPosition, float cameraDistance) {
-    if (params.aoParams.w <= 0.0f) {
-        return 1.0f;
+// Ambient occlusion (x) and contact shadows (y) from the half resolution texture, taking the neighbors at the most
+// similar distance to the camera.
+float2 sampleAmbientOcclusion(LightingParams params, float2 pixelPosition, float cameraDistance) {
+    if ((params.aoParams.w <= 0.0f) && (params.contactParams.w <= 0.0f)) {
+        return float2(1.0f, 1.0f);
     }
 
     const float2 aoPosition = (pixelPosition - params.viewportRect.xy) * 0.5f - 0.5f;
     const int2 basePixel = int2(floor(aoPosition));
     const float2 fraction = aoPosition - float2(basePixel);
     const int2 maxPixel = int2(params.aoParams2.zw) - 1;
-    float sum = 0.0f;
+    float2 sum = float2(0.0f, 0.0f);
     float weightSum = 0.0f;
     [unroll]
     for (int y = 0; y < 2; y++) {
         [unroll]
         for (int x = 0; x < 2; x++) {
             const int2 samplePixel = clamp(basePixel + int2(x, y), int2(0, 0), maxPixel);
-            const float2 value = gAmbientOcclusion.Load(int3(samplePixel, 0));
+            const float4 value = gAmbientOcclusion.Load(int3(samplePixel, 0));
             const float bilinear = (x ? fraction.x : (1.0f - fraction.x)) * (y ? fraction.y : (1.0f - fraction.y));
             const float similarity = 1.0f / (abs(value.y - cameraDistance) / (cameraDistance * 0.02f + 1.0f) + 0.05f);
             const float weight = bilinear * similarity + 1e-5f;
-            sum += value.x * weight;
+            sum += value.xz * weight;
             weightSum += weight;
         }
     }
@@ -213,8 +214,10 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
 
     // Light from the sky above and the ground below, occluded by the surroundings. The occlusion between the crossed
     // cards of foliage isn't real, so it's mostly left out there.
-    const float ambientOcclusion = sampleAmbientOcclusion(params, pixelPosition.xy, length(params.cameraPosition.xyz - position));
+    const float2 occlusionSample = sampleAmbientOcclusion(params, pixelPosition.xy, length(params.cameraPosition.xyz - position));
+    const float ambientOcclusion = (params.aoParams.w > 0.0f) ? occlusionSample.x : 1.0f;
     const float occlusion = lerp(1.0f, ambientOcclusion, params.aoParams.y * (foliage ? params.aoParams2.y : 1.0f));
+    const float contact = (params.contactParams.w > 0.0f) ? lerp(1.0f, occlusionSample.y, params.contactParams.z) : 1.0f;
     const float upFactor = dot(normal, worldUp) * 0.5f + 0.5f;
     const float3 ambientLight = lerp(params.groundColor.rgb, params.ambientColor.rgb, upFactor) * occlusion;
 
@@ -225,7 +228,7 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
         const float NdotL = dot(normal, params.sunDirection.xyz);
         const float wrap = foliage ? params.foliageParams.x : params.lightingParams.z;
         const float diffuse = saturate((NdotL + wrap) / (1.0f + wrap));
-        shadow = sampleShadow(params, position, normal, NdotL, foliageRadius);
+        shadow = min(sampleShadow(params, position, normal, NdotL, foliageRadius), contact);
 
         // Leaves are never completely dark, as light goes through them and bounces inside the canopy.
         if (foliage) {
@@ -251,9 +254,9 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
         const float3 toLight = params.pointLightPosition.xyz - position;
         const float distance = length(toLight);
         const float3 lightDirection = toLight / max(distance, 1e-4f);
-        const float attenuation = pow(saturate(1.0f - distance / params.pointLightPosition.w), 1.5f);
+        const float attenuation = pow(saturate(1.0f - distance / params.pointLightPosition.w), max(params.pointLightColor.w, 0.5f));
         const float diffuse = saturate(dot(normal, lightDirection) * 0.75f + 0.25f);
-        pointLight = params.pointLightColor.rgb * (diffuse * attenuation);
+        pointLight = params.pointLightColor.rgb * (diffuse * attenuation * ((params.sunDirection.w > 0.0f) ? 1.0f : contact));
     }
 
     // Occlusion also darkens the direct light a bit, as the game's colors already include light from everywhere.
@@ -283,6 +286,9 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
     }
     else if (debugView == 6) {
         return float4(occlusion.xxx, 1.0f);
+    }
+    else if (debugView == 8) {
+        return float4(contact.xxx, 1.0f);
     }
     else if (debugView == 7) {
         // Distance from the receiver to the occluder stored in the shadow map (red: occluder in front, green: behind),
