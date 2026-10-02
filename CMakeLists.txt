@@ -609,6 +609,9 @@ build_pixel_shader(  rt64 "src/shaders/LightingGBufferPS.hlsl" "src/shaders/Ligh
 build_pixel_shader(  rt64 "src/shaders/LightingGBufferPS.hlsl" "src/shaders/LightingGBufferFoliagePS.hlsl" "-D FOLIAGE")
 build_pixel_shader(  rt64 "src/shaders/LightingGBufferPS.hlsl" "src/shaders/LightingGBufferFoliagePSMS.hlsl" "-D FOLIAGE" "-D MULTISAMPLING")
 
+include("${PROJECT_SOURCE_DIR}/cmake/post_effects_shaders.cmake")
+include("${PROJECT_SOURCE_DIR}/cmake/lighting_sky_shaders.cmake")
+
 # The lighting shaders read the shared parameter headers and helpers, so they're rebuilt whenever those change.
 file(GLOB RT64_LIGHTING_SHADER_DEPENDS "${PROJECT_SOURCE_DIR}/src/shaders/*.hlsli" "${PROJECT_SOURCE_DIR}/src/shared/*.h")
 foreach(RT64_LIGHTING_SHADER LightingShadowVS LightingShadowPS LightingComposePS LightingComposePSMS LightingGBufferVS LightingGBufferPS LightingGBufferPSMS LightingGBufferFoliagePS LightingGBufferFoliagePSMS)
