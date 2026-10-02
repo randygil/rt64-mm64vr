@@ -24,6 +24,9 @@
 #include "shaders/LightingGBufferFoliagePS.hlsl.spirv.h"
 #include "shaders/LightingGBufferFoliagePSMS.hlsl.spirv.h"
 #include "shaders/LightingShadowPS.hlsl.spirv.h"
+#include "shaders/LightingShadowMergedPS.hlsl.spirv.h"
+#include "shaders/LightingGBufferMergedPS.hlsl.spirv.h"
+#include "shaders/LightingGBufferMergedPSMS.hlsl.spirv.h"
 #include "shaders/LightingShadowVS.hlsl.spirv.h"
 #ifdef _WIN32
 #   include "shaders/FullScreenVS.hlsl.dxil.h"
@@ -40,6 +43,9 @@
 #   include "shaders/LightingGBufferFoliagePS.hlsl.dxil.h"
 #   include "shaders/LightingGBufferFoliagePSMS.hlsl.dxil.h"
 #   include "shaders/LightingShadowPS.hlsl.dxil.h"
+#   include "shaders/LightingShadowMergedPS.hlsl.dxil.h"
+#   include "shaders/LightingGBufferMergedPS.hlsl.dxil.h"
+#   include "shaders/LightingGBufferMergedPSMS.hlsl.dxil.h"
 #   include "shaders/LightingShadowVS.hlsl.dxil.h"
 #elif defined(__APPLE__)
 #   include "shaders/FullScreenVS.hlsl.metal.h"
@@ -56,6 +62,9 @@
 #   include "shaders/LightingGBufferFoliagePS.hlsl.metal.h"
 #   include "shaders/LightingGBufferFoliagePSMS.hlsl.metal.h"
 #   include "shaders/LightingShadowPS.hlsl.metal.h"
+#   include "shaders/LightingShadowMergedPS.hlsl.metal.h"
+#   include "shaders/LightingGBufferMergedPS.hlsl.metal.h"
+#   include "shaders/LightingGBufferMergedPSMS.hlsl.metal.h"
 #   include "shaders/LightingShadowVS.hlsl.metal.h"
 #endif
 
@@ -284,6 +293,45 @@ namespace RT64 {
                     }
                 }
             }
+
+            // Variants that draw consecutive draw calls together, finding the parameters of each triangle in a buffer
+            // with the index of the primitive (which also needs geometry shader support).
+            if (foliageNormalsSupported) {
+                LightingTriangleDrawSet triangleDrawSetDesc;
+                layoutBuilder.begin(false, true);
+                layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingShadowCB), RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL);
+                layoutBuilder.addDescriptorSet(descriptorCommonSet);
+                layoutBuilder.addDescriptorSet(descriptorTextureSet);
+                layoutBuilder.addDescriptorSet(descriptorTextureSet);
+                layoutBuilder.addDescriptorSet(descriptorFramebufferSet);
+                layoutBuilder.addDescriptorSet(triangleDrawSetDesc);
+                layoutBuilder.end();
+                shadowMergedPipelineLayout = layoutBuilder.create(device);
+
+                std::unique_ptr<RenderShader> shadowMergedPixelShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingShadowMergedPS, "PSMain", shaderFormat));
+                pipelineDesc.pipelineLayout = shadowMergedPipelineLayout.get();
+                pipelineDesc.pixelShader = shadowMergedPixelShader.get();
+                shadowMergedPipeline = device->createGraphicsPipeline(pipelineDesc);
+
+                layoutBuilder.begin(false, true);
+                layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingGBufferCB), RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL);
+                layoutBuilder.addDescriptorSet(descriptorCommonSet);
+                layoutBuilder.addDescriptorSet(descriptorTextureSet);
+                layoutBuilder.addDescriptorSet(descriptorTextureSet);
+                layoutBuilder.addDescriptorSet(descriptorFramebufferSet);
+                layoutBuilder.addDescriptorSet(triangleDrawSetDesc);
+                layoutBuilder.end();
+                gbufferMergedPipelineLayout = layoutBuilder.create(device);
+
+                std::unique_ptr<RenderShader> gbufferMergedPixelShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingGBufferMergedPS, "PSMain", shaderFormat));
+                std::unique_ptr<RenderShader> gbufferMergedPixelShaderMS = device->createShader(LIGHTING_SHADER_INPUTS(LightingGBufferMergedPSMS, "PSMain", shaderFormat));
+                gbufferDesc.pipelineLayout = gbufferMergedPipelineLayout.get();
+                gbufferDesc.pixelShader = gbufferMergedPixelShader.get();
+                gbufferMergedPipelines[0] = device->createGraphicsPipeline(gbufferDesc);
+                gbufferDesc.pixelShader = gbufferMergedPixelShaderMS.get();
+                gbufferMergedPipelines[1] = device->createGraphicsPipeline(gbufferDesc);
+                triangleDrawSet = std::make_unique<LightingTriangleDrawSet>(device);
+            }
         }
 
         // Composition of the lighting over the color target.
@@ -442,6 +490,7 @@ namespace RT64 {
 
     void LightingRenderer::reset() {
         gbufferEnabled = (enhancementValue("RT64_LIGHT_GBUFFER", 1.0f) > 0.0f);
+        mergedDraws = (shadowMergedPipeline != nullptr) && (enhancementValue("RT64_LIGHT_MERGE_DRAWS", 1.0f) > 0.0f);
         bumpEnabled = (getRasterLightingQuality() >= 1) && (enhancementValue("RT64_LIGHT_BUMP", 0.0f) > 0.0f);
         scenes.clear();
         casters.clear();
@@ -621,9 +670,53 @@ namespace RT64 {
         shadowMapNeedsTransition = true;
     }
 
-    void LightingRenderer::finish(RenderWorker *worker, std::vector<BufferUploader::Upload> &uploads) {
+    void LightingRenderer::finish(RenderWorker *worker, const std::vector<InstanceDrawCall> &instanceDrawCalls, std::vector<BufferUploader::Upload> &uploads) {
         if (scenes.empty()) {
             return;
+        }
+
+        // Parameters of each triangle of the draw calls drawn again by the shadow and normal passes.
+        if (mergedDraws) {
+            uint32_t triangleCount = 1;
+            auto updateTriangleCount = [&](uint32_t instanceIndex) {
+                const InstanceDrawCall &drawCall = instanceDrawCalls[instanceIndex];
+                if (drawCall.type == InstanceDrawCall::Type::IndexedTriangles) {
+                    triangleCount = std::max(triangleCount, drawCall.triangles.indexStart / 3 + drawCall.triangles.faceCount);
+                }
+            };
+
+            for (const Caster &caster : casters) {
+                updateTriangleCount(caster.instanceIndex);
+            }
+
+            for (const Scene &scene : scenes) {
+                for (const GBufferDraw &draw : scene.gbufferDraws) {
+                    updateTriangleCount(draw.instanceIndex);
+                }
+            }
+
+            triangleDraws.assign(triangleCount, 0);
+            auto writeTriangles = [&](uint32_t instanceIndex, uint32_t flags) {
+                const InstanceDrawCall &drawCall = instanceDrawCalls[instanceIndex];
+                if (drawCall.type == InstanceDrawCall::Type::IndexedTriangles) {
+                    const uint32_t firstTriangle = drawCall.triangles.indexStart / 3;
+                    const uint32_t value = (instanceIndex & 0xFFFFFFU) | (flags << 24);
+                    std::fill(triangleDraws.begin() + firstTriangle, triangleDraws.begin() + firstTriangle + drawCall.triangles.faceCount, value);
+                }
+            };
+
+            for (const Caster &caster : casters) {
+                writeTriangles(caster.instanceIndex, caster.alphaTested ? LIGHTING_GBUFFER_ALPHA_TESTED : 0);
+            }
+
+            // The flags of the normal pass include the ones of the shadow pass.
+            for (const Scene &scene : scenes) {
+                for (const GBufferDraw &draw : scene.gbufferDraws) {
+                    writeTriangles(draw.instanceIndex, draw.flags);
+                }
+            }
+
+            uploads.push_back({ triangleDraws.data(), { 0, triangleDraws.size() }, sizeof(uint32_t), RenderBufferFlag::STORAGE, { }, &triangleDrawsBuffer });
         }
 
         static const uint32_t ShadowMapSizes[] = { 1024, 2048, 2048, 4096 };
@@ -748,6 +841,10 @@ namespace RT64 {
             set->setTexture(set->gAmbientOcclusion, aoTextures[0].get(), RenderTextureLayout::SHADER_READ);
         }
 
+        if (mergedDraws && (triangleDrawSet != nullptr) && (triangleDrawsBuffer.get() != nullptr)) {
+            triangleDrawSet->setBuffer(triangleDrawSet->gTriangleDraws, triangleDrawsBuffer.get(), RenderBufferStructuredView(sizeof(uint32_t)));
+        }
+
         while (aoSets.size() < scenes.size()) {
             aoSets.emplace_back(std::make_unique<LightingAODescriptorSet>(device));
         }
@@ -804,6 +901,46 @@ namespace RT64 {
         interop::LightingShadowCB shadowCB;
         shadowCB.shadowMatrix = shadowMatrix;
         shadowCB.padding = { 0, 0, 0 };
+
+        // All the casters that follow each other in the index buffer are drawn at once.
+        if (mergedDraws) {
+            worker->commandList->setGraphicsPipelineLayout(shadowMergedPipelineLayout.get());
+            worker->commandList->setGraphicsDescriptorSet(commonSet, 0);
+            worker->commandList->setGraphicsDescriptorSet(textureSet, 1);
+            worker->commandList->setGraphicsDescriptorSet(textureSet, 2);
+            worker->commandList->setGraphicsDescriptorSet(framebufferSet, 3);
+            worker->commandList->setGraphicsDescriptorSet(triangleDrawSet->get(), 4);
+            worker->commandList->setPipeline(shadowMergedPipeline.get());
+            uint32_t runIndexStart = 0;
+            uint32_t runIndexCount = 0;
+            auto flushRun = [&]() {
+                if (runIndexCount > 0) {
+                    shadowCB.renderIndex = runIndexStart / 3;
+                    worker->commandList->setGraphicsPushConstants(0, &shadowCB);
+                    worker->commandList->drawIndexedInstanced(runIndexCount, 1, runIndexStart, 0, 0);
+                    runIndexCount = 0;
+                }
+            };
+
+            for (const Caster &caster : casters) {
+                const InstanceDrawCall &drawCall = instanceDrawCalls[caster.instanceIndex];
+                if ((drawCall.type != InstanceDrawCall::Type::IndexedTriangles) || (drawCall.triangles.faceCount == 0)) {
+                    continue;
+                }
+
+                if ((runIndexCount == 0) || ((runIndexStart + runIndexCount) != drawCall.triangles.indexStart)) {
+                    flushRun();
+                    runIndexStart = drawCall.triangles.indexStart;
+                }
+
+                runIndexCount += drawCall.triangles.faceCount * 3;
+            }
+
+            flushRun();
+            worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(shadowMap.get(), RenderTextureLayout::DEPTH_READ));
+            shadowMapRendered = true;
+            return;
+        }
         // Opaque casters don't need their draw call parameters, so consecutive ranges of indices are drawn together. They're
         // all drawn first so the depth test rejects as many pixels of the alpha tested casters as possible, which are
         // expensive as they sample their textures like the RDP does.
@@ -899,6 +1036,46 @@ namespace RT64 {
             gbufferCB.screenScale = scene.screenScale;
             gbufferCB.screenOffset = scene.screenOffset;
             gbufferCB.bumpStrength = enhancementValue("RT64_LIGHT_BUMP", 0.0f);
+            if (mergedDraws) {
+                worker->commandList->setGraphicsPipelineLayout(gbufferMergedPipelineLayout.get());
+                worker->commandList->setGraphicsDescriptorSet(commonSet, 0);
+                worker->commandList->setGraphicsDescriptorSet(textureSet, 1);
+                worker->commandList->setGraphicsDescriptorSet(textureSet, 2);
+                worker->commandList->setGraphicsDescriptorSet(framebufferSet, 3);
+                worker->commandList->setGraphicsDescriptorSet(triangleDrawSet->get(), 4);
+                worker->commandList->setPipeline(gbufferMergedPipelines[multisampling ? 1 : 0].get());
+                uint32_t runIndexStart = 0;
+                uint32_t runIndexCount = 0;
+                auto flushRun = [&]() {
+                    if (runIndexCount > 0) {
+                        gbufferCB.renderIndex = runIndexStart / 3;
+                        gbufferCB.indexStart = runIndexStart;
+                        gbufferCB.flags = 0;
+                        worker->commandList->setGraphicsPushConstants(0, &gbufferCB);
+                        worker->commandList->drawIndexedInstanced(runIndexCount, 1, runIndexStart, 0, 0);
+                        runIndexCount = 0;
+                    }
+                };
+
+                for (const GBufferDraw &draw : scene.gbufferDraws) {
+                    const InstanceDrawCall &drawCall = instanceDrawCalls[draw.instanceIndex];
+                    if ((drawCall.type != InstanceDrawCall::Type::IndexedTriangles) || (drawCall.triangles.faceCount == 0)) {
+                        continue;
+                    }
+
+                    if ((runIndexCount == 0) || ((runIndexStart + runIndexCount) != drawCall.triangles.indexStart)) {
+                        flushRun();
+                        runIndexStart = drawCall.triangles.indexStart;
+                    }
+
+                    runIndexCount += drawCall.triangles.faceCount * 3;
+                }
+
+                flushRun();
+                worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(normalBuffer.get(), RenderTextureLayout::SHADER_READ));
+                return;
+            }
+
             // Draw calls without flags only need the vertices, so consecutive ranges of indices are drawn together.
             const RenderPipeline *previousPipeline = nullptr;
             uint32_t pendingIndexStart = 0;

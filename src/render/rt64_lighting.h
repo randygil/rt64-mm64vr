@@ -96,6 +96,22 @@ namespace RT64 {
         }
     };
 
+    // Draw call and flags of each triangle (low 24 bits render index, high 8 bits LIGHTING_GBUFFER_* flags), so the
+    // passes that draw the scene again can draw many draw calls at once.
+    struct LightingTriangleDrawSet : RenderDescriptorSetBase {
+        uint32_t gTriangleDraws;
+
+        LightingTriangleDrawSet(RenderDevice *device = nullptr) {
+            builder.begin();
+            gTriangleDraws = builder.addStructuredBuffer(0);
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
     struct LightingCopyDescriptorSet : RenderDescriptorSetBase {
         uint32_t gInput;
 
@@ -193,6 +209,14 @@ namespace RT64 {
         uint32_t normalBufferHeight = 0;
         bool foliageNormalsSupported = false;
         bool gbufferEnabled = true;
+        bool mergedDraws = false;
+        std::unique_ptr<RenderPipelineLayout> shadowMergedPipelineLayout;
+        std::unique_ptr<RenderPipeline> shadowMergedPipeline;
+        std::unique_ptr<RenderPipelineLayout> gbufferMergedPipelineLayout;
+        std::unique_ptr<RenderPipeline> gbufferMergedPipelines[2];
+        std::unique_ptr<LightingTriangleDrawSet> triangleDrawSet;
+        BufferPair triangleDrawsBuffer;
+        std::vector<uint32_t> triangleDraws;
         bool bumpEnabled = true;
         std::unique_ptr<RenderPipelineLayout> aoPipelineLayout;
         std::unique_ptr<RenderPipeline> aoPipeline;
@@ -253,8 +277,8 @@ namespace RT64 {
         // Adds an opaque draw call of a scene to the normal buffer (flags are LIGHTING_GBUFFER_*).
         void addGBufferDraw(uint32_t sceneIndex, uint32_t instanceIndex, uint32_t flags);
 
-        // Fits the shadow map and finishes the parameters of the scenes. Adds the upload of the parameters to the list.
-        void finish(RenderWorker *worker, std::vector<BufferUploader::Upload> &uploads);
+        // Fits the shadow map and finishes the parameters of the scenes. Adds the uploads of the frame to the list.
+        void finish(RenderWorker *worker, const std::vector<InstanceDrawCall> &instanceDrawCalls, std::vector<BufferUploader::Upload> &uploads);
 
         // Must be called after the uploads are submitted.
         void updateDescriptorSets();

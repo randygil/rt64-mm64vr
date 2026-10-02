@@ -6,11 +6,18 @@
 // otherwise. Foliage drawn as flat cards (FOLIAGE variant) gets the normals of a sphere around the center of each card,
 // found by intersecting the view ray with it, so all the crossed cards of a tree shade like the same volume.
 //
+// The MERGED variant draws many draw calls at once: it finds the draw call and flags of each triangle in a buffer (low 24
+// bits render index, high 8 bits LIGHTING_GBUFFER_* flags) indexed by the first triangle of the draw plus the primitive.
+//
 // Output: xy octahedral normal, z radius of the foliage sphere / 4096 (0 if it's not foliage), w = 1 where something
 // was stored.
 //
 
 #define DYNAMIC_RENDER_PARAMS
+
+#ifdef MERGED
+#   define FOLIAGE
+#endif
 
 #include "shared/rt64_lighting_params.h"
 
@@ -21,6 +28,9 @@
 [[vk::push_constant]] ConstantBuffer<LightingGBufferCB> gConstants : register(b0, space0);
 ByteAddressBuffer posBuffer : register(t27, space0);
 ByteAddressBuffer indexBuffer : register(t35, space0);
+#ifdef MERGED
+StructuredBuffer<uint> gTriangleDraws : register(t0, space4);
+#endif
 
 #ifdef MULTISAMPLING
 Texture2DMS<float> gBackgroundDepth : register(t2, space3);
@@ -63,7 +73,16 @@ void PSMain(in float4 vertexPosition : SV_POSITION, in float2 vertexUV : TEXCOOR
         discard;
     }
 
-    if ((gConstants.flags & LIGHTING_GBUFFER_ALPHA_TESTED) && lightingPixelDiscarded(gConstants.renderIndex, vertexUV, vertexColor, 0.125f)) {
+#ifdef MERGED
+    const uint triangleDraw = gTriangleDraws[gConstants.renderIndex + primitiveIndex];
+    const uint renderIndex = triangleDraw & 0xFFFFFFU;
+    const uint drawFlags = triangleDraw >> 24;
+#else
+    const uint renderIndex = gConstants.renderIndex;
+    const uint drawFlags = gConstants.flags;
+#endif
+
+    if ((drawFlags & LIGHTING_GBUFFER_ALPHA_TESTED) && lightingPixelDiscarded(renderIndex, vertexUV, vertexColor, 0.125f)) {
         discard;
     }
 
@@ -78,7 +97,7 @@ void PSMain(in float4 vertexPosition : SV_POSITION, in float2 vertexUV : TEXCOOR
     }
 
     float3 normal = faceNormal;
-    const bool vertexNormalValid = (worldNormal.w > 1.5f) || ((gConstants.flags & LIGHTING_GBUFFER_RSP_LIT) && (dot(worldNormal.xyz, worldNormal.xyz) > 1e-4f));
+    const bool vertexNormalValid = (worldNormal.w > 1.5f) || ((drawFlags & LIGHTING_GBUFFER_RSP_LIT) && (dot(worldNormal.xyz, worldNormal.xyz) > 1e-4f));
     if (vertexNormalValid) {
         normal = normalize(worldNormal.xyz);
         if (backFacing) {
@@ -94,13 +113,13 @@ void PSMain(in float4 vertexPosition : SV_POSITION, in float2 vertexUV : TEXCOOR
 
     // Relief from the brightness of the texture, treated as a height map: the normal tilts along the directions the
     // texture coordinates follow on the surface (cotangent frame from the screen space derivatives).
-    if (gConstants.flags & LIGHTING_GBUFFER_BUMP) {
+    if (drawFlags & LIGHTING_GBUFFER_BUMP) {
         const float2 ddxUV = ddx(vertexUV);
         const float2 ddyUV = ddy(vertexUV);
         const float3 LumaWeights = float3(0.2126f, 0.7152f, 0.0722f);
-        const float heightCenter = dot(lightingSampleTexture0(gConstants.renderIndex, vertexUV, ddxUV, ddyUV).rgb, LumaWeights);
-        const float heightU = dot(lightingSampleTexture0(gConstants.renderIndex, vertexUV + float2(1.0f, 0.0f), ddxUV, ddyUV).rgb, LumaWeights);
-        const float heightV = dot(lightingSampleTexture0(gConstants.renderIndex, vertexUV + float2(0.0f, 1.0f), ddxUV, ddyUV).rgb, LumaWeights);
+        const float heightCenter = dot(lightingSampleTexture0(renderIndex, vertexUV, ddxUV, ddyUV).rgb, LumaWeights);
+        const float heightU = dot(lightingSampleTexture0(renderIndex, vertexUV + float2(1.0f, 0.0f), ddxUV, ddyUV).rgb, LumaWeights);
+        const float heightV = dot(lightingSampleTexture0(renderIndex, vertexUV + float2(0.0f, 1.0f), ddxUV, ddyUV).rgb, LumaWeights);
         const float3 dp1 = ddx(worldPosition);
         const float3 dp2 = ddy(worldPosition);
         const float3 dp2Perp = cross(dp2, normal);
@@ -117,7 +136,7 @@ void PSMain(in float4 vertexPosition : SV_POSITION, in float2 vertexUV : TEXCOOR
 
     float flags = 0.0f;
 #ifdef FOLIAGE
-    if (gConstants.flags & LIGHTING_GBUFFER_FOLIAGE) {
+    if (drawFlags & LIGHTING_GBUFFER_FOLIAGE) {
         // The longest edge of each triangle is the diagonal of its card, whose middle is the center of the card.
         const uint baseIndex = (gConstants.indexStart + primitiveIndex * 3) * 4;
         const float3 p0 = loadWorldPosition(indexBuffer.Load(baseIndex + 0));

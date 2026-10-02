@@ -2466,7 +2466,7 @@ namespace RT64 {
 
         lightingBuffersActive = (lighting != nullptr) && !lighting->empty();
         if (lighting != nullptr) {
-            lighting->finish(worker, shaderUploads);
+            lighting->finish(worker, instanceDrawCallVector, shaderUploads);
         }
 
         shaderUploader->submit(worker, shaderUploads);
