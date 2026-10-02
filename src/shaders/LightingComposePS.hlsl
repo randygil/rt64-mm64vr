@@ -11,6 +11,7 @@
 
 #include "Depth.hlsli"
 #include "LightingCommon.hlsli"
+#include "LightingSkyClouds.hlsli"
 
 [[vk::push_constant]] ConstantBuffer<LightingComposeCB> gConstants : register(b0, space0);
 StructuredBuffer<LightingParams> gLightingParams : register(t1, space0);
@@ -24,6 +25,11 @@ SamplerComparisonState gShadowSampler : register(s4, space0);
 Texture2D<float4> gNormalBuffer : register(t5, space0);
 Texture2D<float4> gAmbientOcclusion : register(t6, space0);
 StructuredBuffer<float4> gSkyAnalysis : register(t7, space0);
+
+// Copy of the color target before the lighting and the light of its glowing surfaces at quarter resolution, only read
+// in scenes with glowing surfaces (LightingParams::emissiveParams).
+Texture2D<float4> gSceneColor : register(t8, space0);
+Texture2D<float4> gEmissiveLight : register(t9, space0);
 
 // Tint of the light from the game's sky when it isn't a daytime sky (a sunset, a purple sky), from the average color the
 // procedural sky measured on the previous frames.
@@ -41,6 +47,53 @@ float3 skyLightTint(LightingParams params) {
     const float daytime = smoothstep(0.02f, 0.10f, skyColor.b - skyColor.r) * smoothstep(-0.02f, 0.04f, skyColor.g - skyColor.r);
     const float3 chroma = saturate(skyColor / luma * 0.8f + 0.2f);
     return lerp(float3(1.0f, 1.0f, 1.0f), chroma, params.miscParams.x * (1.0f - daytime));
+}
+
+// Shadows of the clouds of the procedural sky: the shapes of its cloud layer (the same noise, wind and coverage), found
+// where the ray from the position towards the sun crosses the layer. 1 is lit.
+float cloudShadow(LightingParams params, float3 position) {
+    float strength = params.cloudShadowParams.w;
+    if ((params.settings.w & LIGHTING_SCENE_FLAG_SKY_HIDDEN) == 0) {
+        strength *= saturate(gSkyAnalysis[gConstants.sceneIndex % 8].w);
+    }
+
+    if (strength <= 0.0f) {
+        return 1.0f;
+    }
+
+    // In sky space (y up) and cloud heights, from the origin of the world.
+    const float3 relative = position - params.worldOrigin.xyz;
+    const float3 skyPosition = float3(dot(relative, params.worldRight.xyz), dot(relative, params.worldUp.xyz), dot(relative, params.worldForward.xyz)) * params.cloudShadowParams.x;
+    const float3 sun = float3(dot(params.sunDirection.xyz, params.worldRight.xyz), dot(params.sunDirection.xyz, params.worldUp.xyz), dot(params.sunDirection.xyz, params.worldForward.xyz));
+    const float2 layerPosition = (skyPosition.xz + sun.xz / max(sun.y, 0.2f) * max(1.0f - skyPosition.y, 0.0f)) * params.cloudShadowParams.y;
+    float2 shapePosition = layerPosition + params.cloudShadowOffset.xy;
+    const uint octaves = uint(params.cloudShadowMisc.z);
+    if (octaves > 0) {
+        const float WarpFrequency = 0.25f;
+        const float2 warpPosition = layerPosition * WarpFrequency + params.cloudShadowOffset.zw;
+        const float warpX = lightingSkyFbm(warpPosition, 0.0f, 2, 101).x;
+        const float warpY = lightingSkyFbm(warpPosition + float2(17.3f, 9.1f), 0.0f, 2, 117).x;
+        shapePosition += (float2(warpX, warpY) - 0.5f) * params.cloudShadowMisc.x;
+    }
+
+    const float shape = lightingSkyFbm(shapePosition, 0.0f, max(octaves, 2u), 7).x;
+    const float threshold = 0.60f - 0.28f * params.cloudShadowParams.z;
+    const float softness = params.cloudShadowMisc.y;
+    const float density = smoothstep(threshold - softness, threshold + softness, shape);
+    return 1.0f - density * strength;
+}
+
+// Light cast by the glowing surfaces around the pixel (bilinear from the quarter resolution texture).
+float3 sampleEmissiveLight(LightingParams params, float2 pixelPosition) {
+    const float2 position = (pixelPosition - params.viewportRect.xy) * 0.25f - 0.5f;
+    const int2 basePixel = int2(floor(position));
+    const float2 fraction = position - float2(basePixel);
+    const int2 maxPixel = max(int2(ceil((params.viewportRect.zw - params.viewportRect.xy) * 0.25f)) - 1, int2(0, 0));
+    const float3 c00 = gEmissiveLight.Load(int3(clamp(basePixel, int2(0, 0), maxPixel), 0)).rgb;
+    const float3 c10 = gEmissiveLight.Load(int3(clamp(basePixel + int2(1, 0), int2(0, 0), maxPixel), 0)).rgb;
+    const float3 c01 = gEmissiveLight.Load(int3(clamp(basePixel + int2(0, 1), int2(0, 0), maxPixel), 0)).rgb;
+    const float3 c11 = gEmissiveLight.Load(int3(clamp(basePixel + int2(1, 1), int2(0, 0), maxPixel), 0)).rgb;
+    return lerp(lerp(c00, c10, fraction.x), lerp(c01, c11, fraction.x), fraction.y);
 }
 
 float loadDepth(int2 pixel) {
@@ -262,7 +315,7 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
         const float NdotL = dot(normal, params.sunDirection.xyz);
         const float wrap = foliage ? params.foliageParams.x : params.lightingParams.z;
         const float diffuse = saturate((NdotL + wrap) / (1.0f + wrap));
-        shadow = min(sampleShadow(params, position, normal, NdotL, foliageRadius), contact);
+        shadow = min(sampleShadow(params, position, normal, NdotL, foliageRadius), contact) * cloudShadow(params, position);
 
         // Leaves are never completely dark, as light goes through them and bounces inside the canopy.
         if (foliage) {
@@ -293,9 +346,20 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
         pointLight = params.pointLightColor.rgb * (diffuse * attenuation * ((params.sunDirection.w > 0.0f) ? 1.0f : contact));
     }
 
+    // Glowing surfaces of scenes without a sun (lamps, screens, crystals) light their surroundings with their color and
+    // stand out themselves, like the emissive surfaces of the path tracer.
+    float3 emissiveLight = float3(0.0f, 0.0f, 0.0f);
+    float selfEmission = 0.0f;
+    if (params.emissiveParams.w > 0.0f) {
+        const float3 glow = sampleEmissiveLight(params, pixelPosition.xy);
+        emissiveLight = params.emissiveParams.w * (1.0f - exp(-glow * (params.emissiveParams.z / params.emissiveParams.w)));
+        const float3 albedo = gSceneColor.Load(int3(pixel, 0)).rgb;
+        selfEmission = lightingEmissiveMask(albedo, params.emissiveParams.x) * params.emissiveParams.y;
+    }
+
     // Occlusion also darkens the direct light a bit, as the game's colors already include light from everywhere.
     const float directOcclusion = lerp(1.0f, occlusion, params.aoParams2.x);
-    float3 factor = (ambientLight + (sunLight + pointLight) * directOcclusion) * params.lightingParams.y;
+    float3 factor = (ambientLight + (sunLight + pointLight + emissiveLight) * directOcclusion) * params.lightingParams.y + selfEmission;
 
     // The game's fog covers the lighting.
     const float fogAlpha = lightingFogAlpha(params, depth);
@@ -323,6 +387,10 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
     }
     else if (debugView == 8) {
         return float4(contact.xxx, 1.0f);
+    }
+    else if (debugView == 9) {
+        // Light of the glowing surfaces, and red where a surface glows itself.
+        return float4(saturate(emissiveLight + float3(selfEmission, 0.0f, 0.0f)), 1.0f);
     }
     else if (debugView == 7) {
         // Distance from the receiver to the occluder stored in the shadow map (red: occluder in front, green: behind),

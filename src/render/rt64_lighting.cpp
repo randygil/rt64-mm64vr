@@ -18,6 +18,9 @@
 #include "shaders/LightingAOCS.hlsl.spirv.h"
 #include "shaders/LightingAOCSMS.hlsl.spirv.h"
 #include "shaders/LightingAOBlurCS.hlsl.spirv.h"
+#include "shaders/LightingEmissiveCS.hlsl.spirv.h"
+#include "shaders/LightingEmissiveCSMS.hlsl.spirv.h"
+#include "shaders/LightingEmissiveBlurCS.hlsl.spirv.h"
 #include "shaders/LightingGBufferVS.hlsl.spirv.h"
 #include "shaders/LightingGBufferPS.hlsl.spirv.h"
 #include "shaders/LightingGBufferPSMS.hlsl.spirv.h"
@@ -37,6 +40,9 @@
 #   include "shaders/LightingAOCS.hlsl.dxil.h"
 #   include "shaders/LightingAOCSMS.hlsl.dxil.h"
 #   include "shaders/LightingAOBlurCS.hlsl.dxil.h"
+#   include "shaders/LightingEmissiveCS.hlsl.dxil.h"
+#   include "shaders/LightingEmissiveCSMS.hlsl.dxil.h"
+#   include "shaders/LightingEmissiveBlurCS.hlsl.dxil.h"
 #   include "shaders/LightingGBufferVS.hlsl.dxil.h"
 #   include "shaders/LightingGBufferPS.hlsl.dxil.h"
 #   include "shaders/LightingGBufferPSMS.hlsl.dxil.h"
@@ -56,6 +62,9 @@
 #   include "shaders/LightingAOCS.hlsl.metal.h"
 #   include "shaders/LightingAOCSMS.hlsl.metal.h"
 #   include "shaders/LightingAOBlurCS.hlsl.metal.h"
+#   include "shaders/LightingEmissiveCS.hlsl.metal.h"
+#   include "shaders/LightingEmissiveCSMS.hlsl.metal.h"
+#   include "shaders/LightingEmissiveBlurCS.hlsl.metal.h"
 #   include "shaders/LightingGBufferVS.hlsl.metal.h"
 #   include "shaders/LightingGBufferPS.hlsl.metal.h"
 #   include "shaders/LightingGBufferPSMS.hlsl.metal.h"
@@ -383,6 +392,34 @@ namespace RT64 {
             aoBlurSets[1] = std::make_unique<LightingAOBlurDescriptorSet>(device);
         }
 
+        // Light of the glowing surfaces at quarter resolution and its blur.
+        {
+            LightingEmissiveDescriptorSet descriptorSet;
+            RenderPipelineLayoutBuilder layoutBuilder;
+            layoutBuilder.begin();
+            layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingEmissiveCB), RenderShaderStageFlag::COMPUTE);
+            layoutBuilder.addDescriptorSet(descriptorSet);
+            layoutBuilder.end();
+            emissivePipelineLayout = layoutBuilder.create(device);
+
+            std::unique_ptr<RenderShader> emissiveShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingEmissiveCS, "CSMain", shaderFormat));
+            std::unique_ptr<RenderShader> emissiveShaderMS = device->createShader(LIGHTING_SHADER_INPUTS(LightingEmissiveCSMS, "CSMain", shaderFormat));
+            emissivePipeline = device->createComputePipeline(RenderComputePipelineDesc(emissivePipelineLayout.get(), emissiveShader.get(), 8, 8, 1));
+            emissivePipelineMS = device->createComputePipeline(RenderComputePipelineDesc(emissivePipelineLayout.get(), emissiveShaderMS.get(), 8, 8, 1));
+
+            LightingAOBlurDescriptorSet blurDescriptorSet;
+            layoutBuilder.begin();
+            layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingEmissiveBlurCB), RenderShaderStageFlag::COMPUTE);
+            layoutBuilder.addDescriptorSet(blurDescriptorSet);
+            layoutBuilder.end();
+            emissiveBlurPipelineLayout = layoutBuilder.create(device);
+
+            std::unique_ptr<RenderShader> blurShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingEmissiveBlurCS, "CSMain", shaderFormat));
+            emissiveBlurPipeline = device->createComputePipeline(RenderComputePipelineDesc(emissiveBlurPipelineLayout.get(), blurShader.get(), 8, 8, 1));
+            emissiveBlurSets[0] = std::make_unique<LightingAOBlurDescriptorSet>(device);
+            emissiveBlurSets[1] = std::make_unique<LightingAOBlurDescriptorSet>(device);
+        }
+
         // Copy of the color target for the passes that read it.
         {
             LightingCopyDescriptorSet descriptorSet;
@@ -628,6 +665,29 @@ namespace RT64 {
         }
 
         params.miscParams = hlslpp::float4(skyTint, enhancementValue("RT64_LIGHT_AO_MIN_HEIGHT", 12.0f), 0.0f, 0.0f);
+
+        // The clouds of the procedural sky shadow the ground in exteriors whose sky it replaces (the shader weighs them by
+        // how much of the game's sky it replaces, from the analysis).
+        interop::float4 cloudShadowParams(0.0f, 0.0f, 0.0f, 0.0f), cloudShadowOffset(0.0f, 0.0f, 0.0f, 0.0f), cloudShadowMisc(0.0f, 0.0f, 0.0f, 0.0f);
+        if (scene.hasSun && sky->enabled() && (desc.skyHidden || sky->isAnalysisValid(sceneIndex))) {
+            sky->getCloudShadow(lightingTime(), getRasterLightingQuality(), cloudShadowParams, cloudShadowOffset, cloudShadowMisc);
+        }
+
+        params.cloudShadowParams = hlslpp::float4(cloudShadowParams.x, cloudShadowParams.y, cloudShadowParams.z, cloudShadowParams.w);
+        params.cloudShadowOffset = hlslpp::float4(cloudShadowOffset.x, cloudShadowOffset.y, cloudShadowOffset.z, cloudShadowOffset.w);
+        params.cloudShadowMisc = hlslpp::float4(cloudShadowMisc.x, cloudShadowMisc.y, cloudShadowMisc.z, cloudShadowMisc.w);
+
+        // Glowing surfaces in scenes without a sun (interiors and dungeons). Experimental and off by default: they cost
+        // about 0.2 ms (a copy of the color target and three small passes), and in Mega Man 64 the colors alone can't
+        // tell its few small lamps from bright banners and signs (RT64_LIGHT_EMISSIVE_MAX 0.6 turns them on).
+        const float emissiveMax = enhancementValue("RT64_LIGHT_EMISSIVE_MAX", 0.0f);
+        if (!scene.hasSun && (emissiveMax > 0.0f) && (getRasterLightingQuality() >= int(enhancementValue("RT64_LIGHT_EMISSIVE_QUALITY", 2.0f)))) {
+            params.emissiveParams = hlslpp::float4(enhancementValue("RT64_LIGHT_EMISSIVE_THRESHOLD", 0.65f), enhancementValue("RT64_LIGHT_EMISSIVE", 0.35f),
+                enhancementValue("RT64_LIGHT_EMISSIVE_LIGHT", 10.0f), emissiveMax);
+        }
+        else {
+            params.emissiveParams = hlslpp::float4(0.0f, 0.0f, 0.0f, 0.0f);
+        }
         if (gbufferEnabled) {
             params.settings.w |= LIGHTING_SCENE_FLAG_GBUFFER;
         }
@@ -797,6 +857,17 @@ namespace RT64 {
             createAOTextures(std::max(aoWidth, aoTextureWidth), std::max(aoHeight, aoTextureHeight));
         }
 
+        const uint32_t emissiveWidth = std::max((normalWidth + 3) / 4, 1U);
+        const uint32_t emissiveHeight = std::max((normalHeight + 3) / 4, 1U);
+        if ((emissiveTextures[0] == nullptr) || (emissiveTextureWidth < emissiveWidth) || (emissiveTextureHeight < emissiveHeight)) {
+            emissiveTextureWidth = std::max(emissiveWidth, emissiveTextureWidth);
+            emissiveTextureHeight = std::max(emissiveHeight, emissiveTextureHeight);
+            for (uint32_t i = 0; i < 2; i++) {
+                emissiveTextures[i] = device->createTexture(RenderTextureDesc::Texture2D(emissiveTextureWidth, emissiveTextureHeight, 1, RenderFormat::R16G16B16A16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+                emissiveTextures[i]->setName("Lighting Emissive Light");
+            }
+        }
+
         frameIndex++;
 
         RenderFormat colorFormat = scenes[0].colorTarget->format;
@@ -867,6 +938,12 @@ namespace RT64 {
             const uint32_t sceneHeight = uint32_t(std::max(scene.rect.bottom - scene.rect.top, 0));
             params.aoParams2.z = float(std::min((sceneWidth + 1) / 2, aoTextureWidth));
             params.aoParams2.w = float(std::min((sceneHeight + 1) / 2, aoTextureHeight));
+
+            // The glowing surfaces are found in the copy of the color target, which only holds one format per frame.
+            if (scene.colorTarget->format != colorCopyFormat) {
+                params.emissiveParams.w = 0.0f;
+            }
+
             paramsVector.emplace_back(params);
         }
 
@@ -900,7 +977,27 @@ namespace RT64 {
             set->setTexture(set->gNormalBuffer, normalBuffer.get(), RenderTextureLayout::SHADER_READ);
             set->setTexture(set->gAmbientOcclusion, aoTextures[0].get(), RenderTextureLayout::SHADER_READ);
             set->setBuffer(set->gSkyAnalysis, sky->getAnalysisBuffer(), RenderBufferStructuredView(sizeof(interop::float4)));
+            set->setTexture(set->gSceneColor, colorCopyTexture.get(), RenderTextureLayout::SHADER_READ);
+            set->setTexture(set->gEmissiveLight, emissiveTextures[0].get(), RenderTextureLayout::SHADER_READ);
         }
+
+        while (emissiveSets.size() < scenes.size()) {
+            emissiveSets.emplace_back(std::make_unique<LightingEmissiveDescriptorSet>(device));
+        }
+
+        for (uint32_t i = 0; i < uint32_t(scenes.size()); i++) {
+            const Scene &scene = scenes[i];
+            LightingEmissiveDescriptorSet *set = emissiveSets[i].get();
+            set->setBuffer(set->gLightingParams, paramsBuffer.get(), RenderBufferStructuredView(sizeof(interop::LightingParams)));
+            set->setTexture(set->gDepth, scene.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ, scene.depthTarget->textureView.get());
+            set->setTexture(set->gSceneColor, colorCopyTexture.get(), RenderTextureLayout::SHADER_READ);
+            set->setTexture(set->gOutput, emissiveTextures[0].get(), RenderTextureLayout::GENERAL);
+        }
+
+        emissiveBlurSets[0]->setTexture(emissiveBlurSets[0]->gInput, emissiveTextures[0].get(), RenderTextureLayout::SHADER_READ);
+        emissiveBlurSets[0]->setTexture(emissiveBlurSets[0]->gOutput, emissiveTextures[1].get(), RenderTextureLayout::GENERAL);
+        emissiveBlurSets[1]->setTexture(emissiveBlurSets[1]->gInput, emissiveTextures[1].get(), RenderTextureLayout::SHADER_READ);
+        emissiveBlurSets[1]->setTexture(emissiveBlurSets[1]->gOutput, emissiveTextures[0].get(), RenderTextureLayout::GENERAL);
 
         if (mergedDraws && (triangleDrawSet != nullptr) && (triangleDrawsBuffer.get() != nullptr)) {
             triangleDrawSet->setBuffer(triangleDrawSet->gTriangleDraws, triangleDrawsBuffer.get(), RenderBufferStructuredView(sizeof(uint32_t)));
@@ -1279,12 +1376,77 @@ namespace RT64 {
         return pipelines;
     }
 
+    void LightingRenderer::recordEmissive(RenderWorker *worker, uint32_t sceneIndex) {
+        assert(sceneIndex < scenes.size());
+        const Scene &scene = scenes[sceneIndex];
+        const uint32_t sceneWidth = uint32_t(std::max(scene.rect.right - scene.rect.left, 0));
+        const uint32_t sceneHeight = uint32_t(std::max(scene.rect.bottom - scene.rect.top, 0));
+        const uint32_t width = std::min((sceneWidth + 3) / 4, emissiveTextureWidth);
+        const uint32_t height = std::min((sceneHeight + 3) / 4, emissiveTextureHeight);
+        const RenderTexture *sceneColor = nullptr;
+        if ((scene.params.emissiveParams.w > 0.0f) && (width > 0) && (height > 0) && (sceneIndex < emissiveSets.size())) {
+            sceneColor = copyColor(worker, sceneIndex);
+            gpuMarker(worker->commandList.get(), "emissive copy");
+        }
+
+        // The composition reads both textures even when the scene doesn't glow.
+        if (sceneColor == nullptr) {
+            worker->commandList->barriers(RenderBarrierStage::GRAPHICS, {
+                RenderTextureBarrier(colorCopyTexture.get(), RenderTextureLayout::SHADER_READ),
+                RenderTextureBarrier(emissiveTextures[0].get(), RenderTextureLayout::SHADER_READ)
+            });
+
+            return;
+        }
+
+        const uint32_t dispatchX = (width + 7) / 8;
+        const uint32_t dispatchY = (height + 7) / 8;
+        const bool multisampling = (scene.depthTarget->multisampling.sampleCount > 1);
+        interop::LightingEmissiveCB emissiveCB;
+        emissiveCB.sceneIndex = sceneIndex;
+        emissiveCB.outputSize = { width, height };
+        emissiveCB.padding = 0;
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, {
+            RenderTextureBarrier(scene.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ),
+            RenderTextureBarrier(colorCopyTexture.get(), RenderTextureLayout::SHADER_READ)
+        });
+
+        worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderTextureBarrier(emissiveTextures[0].get(), RenderTextureLayout::GENERAL));
+        worker->commandList->setPipeline(multisampling ? emissivePipelineMS.get() : emissivePipeline.get());
+        worker->commandList->setComputePipelineLayout(emissivePipelineLayout.get());
+        worker->commandList->setComputePushConstants(0, &emissiveCB);
+        worker->commandList->setComputeDescriptorSet(emissiveSets[sceneIndex]->get(), 0);
+        worker->commandList->dispatch(dispatchX, dispatchY, 1);
+
+        // Horizontal and vertical blur, ending back in the first texture.
+        interop::LightingEmissiveBlurCB blurCB;
+        blurCB.size = { width, height };
+        blurCB.radius = uint32_t(std::clamp(enhancementValue("RT64_LIGHT_EMISSIVE_RADIUS", 24.0f), 1.0f, 64.0f));
+        blurCB.padding = { 0, 0, 0 };
+        worker->commandList->setPipeline(emissiveBlurPipeline.get());
+        worker->commandList->setComputePipelineLayout(emissiveBlurPipelineLayout.get());
+        for (uint32_t pass = 0; pass < 2; pass++) {
+            RenderTexture *input = emissiveTextures[pass].get();
+            RenderTexture *output = emissiveTextures[pass ^ 1].get();
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, { RenderTextureBarrier(input, RenderTextureLayout::SHADER_READ), RenderTextureBarrier(output, RenderTextureLayout::GENERAL) });
+            blurCB.direction = (pass == 0) ? interop::int2(1, 0) : interop::int2(0, 1);
+            worker->commandList->setComputePushConstants(0, &blurCB);
+            worker->commandList->setComputeDescriptorSet(emissiveBlurSets[pass]->get(), 0);
+            worker->commandList->dispatch(dispatchX, dispatchY, 1);
+        }
+
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(emissiveTextures[0].get(), RenderTextureLayout::SHADER_READ));
+        gpuMarker(worker->commandList.get(), "emissive");
+    }
+
     void LightingRenderer::recordCompose(RenderWorker *worker, uint32_t sceneIndex) {
         assert(sceneIndex < scenes.size());
         const Scene &scene = scenes[sceneIndex];
         if (scene.rect.isEmpty() || (sceneIndex >= composeSets.size())) {
             return;
         }
+
+        recordEmissive(worker, sceneIndex);
 
         RenderTarget *colorTarget = scene.colorTarget;
         ComposePipelines &pipelines = getComposePipelines(colorTarget->multisampling, colorTarget->format);

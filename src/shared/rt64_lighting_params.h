@@ -100,6 +100,22 @@ namespace interop {
         // above a surface under which the ambient occlusion ignores other surfaces (thin layers like signs and posters).
         float4 miscParams;
 
+        // Shadows of the clouds of the procedural sky on the ground: x inverse of the height of the clouds in world units,
+        // y cells of their noise per cloud height, z coverage of the clouds and w strength of the shadows (0 if disabled).
+        float4 cloudShadowParams;
+
+        // xy offset of the shapes of the clouds and zw offset of the noise that warps them, in cells of each noise (they
+        // move with the wind, like the clouds of the sky).
+        float4 cloudShadowOffset;
+
+        // x warp of the shapes, y softness of the edges of the shadows, z octaves of the noise (0 skips the warp).
+        float4 cloudShadowMisc;
+
+        // Glowing surfaces of scenes without a sun (see lightingEmissiveMask): x brightness of the strongest channel from
+        // which colorful surfaces glow, y brightness added to the glowing surfaces themselves, z strength of the light they cast around them and
+        // w most light they can add to a surface (0 if disabled).
+        float4 emissiveParams;
+
         // x debug view, y quality level, z sample count of the depth buffer, w flags.
         uint4 settings;
     };
@@ -129,6 +145,19 @@ namespace interop {
     struct LightingAOBlurCB {
         uint2 size;
         int2 direction;
+    };
+
+    struct LightingEmissiveCB {
+        uint sceneIndex;
+        uint2 outputSize;
+        uint padding;
+    };
+
+    struct LightingEmissiveBlurCB {
+        uint2 size;
+        int2 direction;
+        uint radius;
+        uint3 padding;
     };
 
     struct LightingComposeCB {

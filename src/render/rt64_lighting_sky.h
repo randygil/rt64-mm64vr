@@ -62,5 +62,9 @@ namespace RT64 {
         // Whether the entry of a scene index holds an analysis (the sky has been drawn for that index without replacing
         // all of it). Entries that don't are never written, so they must not be read.
         bool isAnalysisValid(uint32_t sceneIndex) const;
+
+        // Shadows of the clouds on the ground for the lighting (see LightingParams::cloudShadowParams), moving with the
+        // wind like the clouds of the sky at the same time. The strength is 0 if they're disabled.
+        void getCloudShadow(float time, int quality, interop::float4 &params, interop::float4 &offset, interop::float4 &misc);
     };
 };

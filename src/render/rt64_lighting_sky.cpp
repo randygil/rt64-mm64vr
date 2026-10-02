@@ -161,6 +161,9 @@ namespace RT64 {
         float cloudAmbient;
         float cloudBelly;
         float cloudHaze;
+        float groundShadow;
+        float groundShadowScale;
+        float groundShadowSoftness;
         float horizonBlend;
         float horizonHeight;
         float keyWhite;
@@ -201,6 +204,9 @@ namespace RT64 {
         s.cloudAmbient = std::max(enhancementValue("RT64_SKY_CLOUD_AMBIENT", 0.55f), 0.0f);
         s.cloudBelly = std::clamp(enhancementValue("RT64_SKY_CLOUD_BELLY", 0.5f), 0.0f, 1.0f);
         s.cloudHaze = std::max(enhancementValue("RT64_SKY_CLOUD_HAZE", 0.15f), 0.0f);
+        s.groundShadow = std::clamp(enhancementValue("RT64_SKY_GROUND_SHADOW", 0.45f), 0.0f, 1.0f);
+        s.groundShadowScale = std::max(enhancementValue("RT64_SKY_GROUND_SHADOW_SCALE", 12.0f), 0.01f);
+        s.groundShadowSoftness = std::clamp(enhancementValue("RT64_SKY_GROUND_SHADOW_SOFTNESS", 0.06f), 0.01f, 0.5f);
         s.horizonBlend = std::clamp(enhancementValue("RT64_SKY_HORIZON_BLEND", 0.8f), 0.0f, 1.0f);
         s.horizonHeight = std::max(enhancementValue("RT64_SKY_HORIZON_HEIGHT", 0.12f), 1e-3f);
         s.keyWhite = std::max(enhancementValue("RT64_SKY_KEY_WHITE", 1.0f), 0.0f);
@@ -545,6 +551,35 @@ namespace RT64 {
 
     bool LightingSky::isAnalysisValid(uint32_t sceneIndex) const {
         return impl->analysisCleared && impl->analysisValid[sceneIndex % SkyAnalysisCount] && !impl->settings.replaceAll;
+    }
+
+    void LightingSky::getCloudShadow(float time, int quality, interop::float4 &params, interop::float4 &offset, interop::float4 &misc) {
+        params = interop::float4(0.0f, 0.0f, 0.0f, 0.0f);
+        offset = interop::float4(0.0f, 0.0f, 0.0f, 0.0f);
+        misc = interop::float4(0.0f, 0.0f, 0.0f, 0.0f);
+        if (impl->settingsCounter == 0) {
+            impl->settings = readSkySettings();
+            impl->settingsCounter = 1;
+        }
+
+        const SkySettings &settings = impl->settings;
+        if ((settings.groundShadow <= 0.0f) || (settings.cloudOpacity <= 0.0f) || (settings.cloudCoverage <= 0.0f)) {
+            return;
+        }
+
+        // The same wind as the clouds of the sky (see record). The shadows are smaller than the clouds overhead would
+        // cast (by the scale setting) so they pass over the ground at a size that reads in a small game area.
+        const double windAngle = double(settings.windAngle) * (3.14159265358979323846 / 180.0);
+        const double windX = -cos(windAngle);
+        const double windZ = -sin(windAngle);
+        const double travel = double(time) * SkyBaseCloudSpeed * double(settings.cloudSpeed);
+        const double warpTravel = travel * SkyWarpSpeed;
+        const float frequency = (1.0f / settings.cloudScale) * settings.groundShadowScale;
+        params = interop::float4(1.0f / settings.cloudHeight, frequency, settings.cloudCoverage, settings.groundShadow * std::min(settings.cloudOpacity, 1.0f));
+        offset = interop::float4(
+            float(wrapPeriod(windX * travel, SkyNoisePeriod)), float(wrapPeriod(windZ * travel, SkyNoisePeriod)),
+            float(wrapPeriod(windX * warpTravel, SkyNoisePeriod)), float(wrapPeriod(windZ * warpTravel, SkyNoisePeriod)));
+        misc = interop::float4(settings.cloudWarp, settings.groundShadowSoftness, (quality <= 0) ? 0.0f : 3.0f, 0.0f);
     }
 
     bool LightingSky::enabled() const {

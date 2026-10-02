@@ -44,6 +44,8 @@ namespace RT64 {
         uint32_t gNormalBuffer;
         uint32_t gAmbientOcclusion;
         uint32_t gSkyAnalysis;
+        uint32_t gSceneColor;
+        uint32_t gEmissiveLight;
 
         LightingComposeDescriptorSet(const RenderSampler *shadowSampler, RenderDevice *device = nullptr) {
             builder.begin();
@@ -54,6 +56,8 @@ namespace RT64 {
             gNormalBuffer = builder.addTexture(5);
             gAmbientOcclusion = builder.addTexture(6);
             gSkyAnalysis = builder.addStructuredBuffer(7);
+            gSceneColor = builder.addTexture(8);
+            gEmissiveLight = builder.addTexture(9);
             builder.end();
 
             if (device != nullptr) {
@@ -82,6 +86,27 @@ namespace RT64 {
         }
     };
 
+    struct LightingEmissiveDescriptorSet : RenderDescriptorSetBase {
+        uint32_t gLightingParams;
+        uint32_t gDepth;
+        uint32_t gSceneColor;
+        uint32_t gOutput;
+
+        LightingEmissiveDescriptorSet(RenderDevice *device = nullptr) {
+            builder.begin();
+            gLightingParams = builder.addStructuredBuffer(1);
+            gDepth = builder.addTexture(2);
+            gSceneColor = builder.addTexture(3);
+            gOutput = builder.addReadWriteTexture(4);
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
+    // Also used by the blur of the light of the glowing surfaces.
     struct LightingAOBlurDescriptorSet : RenderDescriptorSetBase {
         uint32_t gInput;
         uint32_t gOutput;
@@ -235,6 +260,16 @@ namespace RT64 {
         uint32_t aoTextureHeight = 0;
         std::vector<std::unique_ptr<LightingAODescriptorSet>> aoSets;
         std::unique_ptr<LightingAOBlurDescriptorSet> aoBlurSets[2];
+        std::unique_ptr<RenderPipelineLayout> emissivePipelineLayout;
+        std::unique_ptr<RenderPipeline> emissivePipeline;
+        std::unique_ptr<RenderPipeline> emissivePipelineMS;
+        std::unique_ptr<RenderPipelineLayout> emissiveBlurPipelineLayout;
+        std::unique_ptr<RenderPipeline> emissiveBlurPipeline;
+        std::unique_ptr<RenderTexture> emissiveTextures[2];
+        uint32_t emissiveTextureWidth = 0;
+        uint32_t emissiveTextureHeight = 0;
+        std::vector<std::unique_ptr<LightingEmissiveDescriptorSet>> emissiveSets;
+        std::unique_ptr<LightingAOBlurDescriptorSet> emissiveBlurSets[2];
         uint32_t frameIndex = 0;
         std::unique_ptr<RenderPipelineLayout> composePipelineLayout;
         std::unique_ptr<RenderPipelineLayout> copyPipelineLayout;
@@ -283,6 +318,9 @@ namespace RT64 {
 
         // Adds an opaque draw call of a scene to the normal buffer (flags are LIGHTING_GBUFFER_*).
         void addGBufferDraw(uint32_t sceneIndex, uint32_t instanceIndex, uint32_t flags);
+
+        // Light of the glowing surfaces of a scene without a sun, before its composition (which calls it).
+        void recordEmissive(RenderWorker *worker, uint32_t sceneIndex);
 
         // Fits the shadow map and finishes the parameters of the scenes. Adds the uploads of the frame to the list.
         void finish(RenderWorker *worker, const std::vector<InstanceDrawCall> &instanceDrawCalls, std::vector<BufferUploader::Upload> &uploads);

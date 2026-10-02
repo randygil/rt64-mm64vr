@@ -605,6 +605,9 @@ build_pixel_shader(  rt64 "src/shaders/LightingComposePS.hlsl" "src/shaders/Ligh
 build_compute_shader(rt64 "src/shaders/LightingAOCS.hlsl")
 build_compute_shader(rt64 "src/shaders/LightingAOCS.hlsl" "src/shaders/LightingAOCSMS.hlsl" "-D MULTISAMPLING")
 build_compute_shader(rt64 "src/shaders/LightingAOBlurCS.hlsl")
+build_compute_shader(rt64 "src/shaders/LightingEmissiveCS.hlsl")
+build_compute_shader(rt64 "src/shaders/LightingEmissiveCS.hlsl" "src/shaders/LightingEmissiveCSMS.hlsl" "-D MULTISAMPLING")
+build_compute_shader(rt64 "src/shaders/LightingEmissiveBlurCS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/LightingCopyPS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/LightingCopyPS.hlsl" "src/shaders/LightingCopyPSMS.hlsl" "-D MULTISAMPLING")
 build_vertex_shader( rt64 "src/shaders/LightingGBufferVS.hlsl")
@@ -620,7 +623,7 @@ include("${PROJECT_SOURCE_DIR}/cmake/lighting_sky_shaders.cmake")
 
 # The lighting shaders read the shared parameter headers and helpers, so they're rebuilt whenever those change.
 file(GLOB RT64_LIGHTING_SHADER_DEPENDS "${PROJECT_SOURCE_DIR}/src/shaders/*.hlsli" "${PROJECT_SOURCE_DIR}/src/shared/*.h")
-foreach(RT64_LIGHTING_SHADER LightingShadowVS LightingShadowPS LightingComposePS LightingComposePSMS LightingAOCS LightingAOCSMS LightingAOBlurCS LightingCopyPS LightingCopyPSMS LightingGBufferVS LightingGBufferPS LightingGBufferPSMS LightingGBufferFoliagePS LightingGBufferFoliagePSMS LightingShadowMergedPS LightingGBufferMergedPS LightingGBufferMergedPSMS)
+foreach(RT64_LIGHTING_SHADER LightingShadowVS LightingShadowPS LightingComposePS LightingComposePSMS LightingAOCS LightingAOCSMS LightingAOBlurCS LightingEmissiveCS LightingEmissiveCSMS LightingEmissiveBlurCS LightingCopyPS LightingCopyPSMS LightingGBufferVS LightingGBufferPS LightingGBufferPSMS LightingGBufferFoliagePS LightingGBufferFoliagePSMS LightingShadowMergedPS LightingGBufferMergedPS LightingGBufferMergedPSMS)
     set(RT64_LIGHTING_SHADER_OUTPUT "${CMAKE_BINARY_DIR}/src/shaders/${RT64_LIGHTING_SHADER}.hlsl")
     add_custom_command(OUTPUT "${RT64_LIGHTING_SHADER_OUTPUT}.spv" APPEND DEPENDS ${RT64_LIGHTING_SHADER_DEPENDS})
     if (WIN32)

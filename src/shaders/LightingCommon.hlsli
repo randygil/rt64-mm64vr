@@ -34,6 +34,18 @@ bool lightingIsBackground(LightingParams params, float depth) {
     return depth >= params.depthToClip.z;
 }
 
+// How much a color of a scene without a sun looks like a light (a lamp, a screen, a crystal): colorful and bright, or
+// nearly white. Pale walls and floors (little color) and dark colorful surfaces (clothes, armor, dark stripes) don't
+// glow.
+float lightingEmissiveMask(float3 color, float threshold) {
+    const float maxChannel = max(color.r, max(color.g, color.b));
+    const float minChannel = min(color.r, min(color.g, color.b));
+    const float luma = dot(color, float3(0.299f, 0.587f, 0.114f));
+    const float colorful = smoothstep(0.3f, 0.55f, maxChannel - minChannel) * smoothstep(threshold, threshold + 0.12f, maxChannel) * smoothstep(0.3f, 0.4f, luma);
+    const float white = smoothstep(0.9f, 0.98f, minChannel);
+    return max(colorful, white);
+}
+
 // Octahedral encoding of unit vectors into two components in [0, 1].
 float2 lightingOctWrap(float2 v) {
     return (1.0f - abs(v.yx)) * select(v.xy >= 0.0f, 1.0f, -1.0f);
