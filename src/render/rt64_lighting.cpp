@@ -92,7 +92,10 @@ namespace RT64 {
     static std::atomic<int> rasterLightingQuality = 1;
 
     void setRasterLightingEnabled(bool enabled) {
-        rasterLightingEnabled = enabled;
+        // RT64_LIGHTING forces the lighting on or off for tests regardless of the host's settings.
+        if (getenv("RT64_LIGHTING") == nullptr) {
+            rasterLightingEnabled = enabled;
+        }
     }
 
     bool isRasterLightingEnabled() {
