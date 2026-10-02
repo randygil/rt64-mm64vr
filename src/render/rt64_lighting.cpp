@@ -788,7 +788,10 @@ namespace RT64 {
         interop::LightingShadowCB shadowCB;
         shadowCB.shadowMatrix = shadowMatrix;
         shadowCB.padding = { 0, 0, 0 };
-        // Opaque casters don't need their draw call parameters, so consecutive ranges of indices are drawn together.
+        // Opaque casters don't need their draw call parameters, so consecutive ranges of indices are drawn together. They're
+        // all drawn first so the depth test rejects as many pixels of the alpha tested casters as possible, which are
+        // expensive as they sample their textures like the RDP does.
+        const bool alphaTestedShadows = (enhancementValue("RT64_LIGHT_SHADOW_ALPHA", 1.0f) > 0.0f);
         const RenderPipeline *previousPipeline = nullptr;
         uint32_t pendingIndexStart = 0;
         uint32_t pendingIndexCount = 0;
@@ -799,7 +802,22 @@ namespace RT64 {
             }
         };
 
+        sortedCasters.clear();
         for (const Caster &caster : casters) {
+            if (!caster.alphaTested || !alphaTestedShadows) {
+                sortedCasters.push_back({ caster.instanceIndex, false });
+            }
+        }
+
+        if (alphaTestedShadows) {
+            for (const Caster &caster : casters) {
+                if (caster.alphaTested) {
+                    sortedCasters.push_back(caster);
+                }
+            }
+        }
+
+        for (const Caster &caster : sortedCasters) {
             const InstanceDrawCall &drawCall = instanceDrawCalls[caster.instanceIndex];
             if ((drawCall.type != InstanceDrawCall::Type::IndexedTriangles) || (drawCall.triangles.faceCount == 0)) {
                 continue;

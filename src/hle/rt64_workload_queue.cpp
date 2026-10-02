@@ -852,6 +852,8 @@ namespace RT64 {
             queryPool->queryResults();
             const uint64_t *frameTimestamps = queryPool->getResults();
             rendererGPUProfiler.log(double(frameTimestamps[1] - frameTimestamps[0]) / 1000000.0);
+            gpuTimeAccumulatedMs += double(frameTimestamps[1] - frameTimestamps[0]) / 1000000.0;
+            gpuTimeAccumulatedCount++;
 
             // Indicate to the texture cache it's safe to delete the textures if no locks are active.
             ext.textureCache->decrementLock();
@@ -1134,7 +1136,10 @@ namespace RT64 {
                         static uint32_t accumulatedFrames = 0;
                         accumulatedMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
                         if (++accumulatedFrames == 120) {
-                            fprintf(stderr, "Frame render time: %.2f ms (RT %s)" "\n", accumulatedMicro / 120000.0, workloadConfig.raytracingEnabled ? "on" : "off");
+                            const double gpuTimeMs = (gpuTimeAccumulatedCount > 0) ? (gpuTimeAccumulatedMs / gpuTimeAccumulatedCount) : 0.0;
+                            fprintf(stderr, "Frame render time: %.2f ms, GPU %.2f ms (RT %s)" "\n", accumulatedMicro / 120000.0, gpuTimeMs, workloadConfig.raytracingEnabled ? "on" : "off");
+                            gpuTimeAccumulatedMs = 0.0;
+                            gpuTimeAccumulatedCount = 0;
                             accumulatedMicro = 0;
                             accumulatedFrames = 0;
                         }

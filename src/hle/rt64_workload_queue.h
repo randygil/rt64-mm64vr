@@ -83,6 +83,10 @@ namespace RT64 {
         std::atomic<bool> ubershadersOnly = false;
         std::atomic<bool> ubershadersVisible = false;
         std::unique_ptr<FramebufferRenderer> framebufferRenderer;
+
+        // Debugging aid for RT64_PRINT_FRAME_TIME: GPU time of the frames rendered since the last print.
+        double gpuTimeAccumulatedMs = 0.0;
+        uint32_t gpuTimeAccumulatedCount = 0;
         std::unique_ptr<RenderFramebufferManager> renderFramebufferManager;
         TileProcessor tileProcessor;
         LookAtProcessor lookAtProcessor;

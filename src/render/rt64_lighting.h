@@ -228,6 +228,7 @@ namespace RT64 {
         std::vector<Scene> scenes;
         std::vector<interop::LightingParams> paramsVector;
         std::vector<Caster> casters;
+        std::vector<Caster> sortedCasters;
         interop::float4x4 shadowMatrix;
         bool shadowMapActive = false;
         bool shadowMapRendered = false;
