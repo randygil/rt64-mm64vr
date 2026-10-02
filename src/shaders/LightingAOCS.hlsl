@@ -55,9 +55,9 @@ float3 normalAt(LightingParams params, int2 pixel, float depth, float3 position)
     return (dot(normal, params.cameraPosition.xyz - position) < 0.0f) ? -normal : normal;
 }
 
-// Interleaved gradient noise (Jimenez 2014), a cheap per pixel rotation that the blur turns into a smooth result.
-float gradientNoise(float2 pixel, uint frameIndex) {
-    pixel += float(frameIndex % 64) * 5.588238f;
+// Interleaved gradient noise (Jimenez 2014), a cheap per pixel rotation that the blur turns into a smooth result. It
+// doesn't change between frames: there's no temporal accumulation to average it, so it would flicker.
+float gradientNoise(float2 pixel) {
     return frac(52.9829189f * frac(dot(pixel, float2(0.06711056f, 0.00583715f))));
 }
 
@@ -93,7 +93,7 @@ void CSMain(uint2 threadId : SV_DispatchThreadID) {
     const uint sliceCount = max(uint(params.aoParams.w), 1U);
     const uint stepCount = 6;
     const float maxPixelRadius = min(pixelRadius, 256.0f);
-    const float noise = gradientNoise(float2(threadId), gConstants.frameIndex);
+    const float noise = gradientNoise(float2(threadId));
     const float stepNoise = frac(noise * 7.13f + 0.37f);
     float visibility = 0.0f;
     for (uint slice = 0; slice < sliceCount; slice++) {

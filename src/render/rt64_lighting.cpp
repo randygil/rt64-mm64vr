@@ -523,7 +523,7 @@ namespace RT64 {
                 }
             }
             else if (float(params.pointLightPosition.w) <= 0.0f) {
-                const float pointStrength = enhancementValue("RT64_LIGHT_POINT", 0.35f);
+                const float pointStrength = enhancementValue("RT64_LIGHT_POINT", 0.5f);
                 params.pointLightPosition = hlslpp::float4(position, light.attenuationRadius);
                 params.pointLightColor = hlslpp::float4(light.diffuseColor.x, light.diffuseColor.y, light.diffuseColor.z, 0.0f) * pointStrength;
             }
@@ -534,7 +534,7 @@ namespace RT64 {
             params.groundColor = hlslpp::float4(enhancementValue("RT64_LIGHT_GROUND_R", 0.50f), enhancementValue("RT64_LIGHT_GROUND_G", 0.47f), enhancementValue("RT64_LIGHT_GROUND_B", 0.42f), 0.0f);
         }
         else {
-            const float indoorAmbient = enhancementValue("RT64_LIGHT_INDOOR_AMBIENT", 0.95f);
+            const float indoorAmbient = enhancementValue("RT64_LIGHT_INDOOR_AMBIENT", 0.85f);
             params.ambientColor = hlslpp::float4(indoorAmbient, indoorAmbient, indoorAmbient, 0.0f);
             const float indoorGround = indoorAmbient * enhancementValue("RT64_LIGHT_INDOOR_GROUND", 0.85f);
             params.groundColor = hlslpp::float4(indoorGround, indoorGround, indoorGround, 0.0f);
