@@ -462,6 +462,7 @@ namespace RT64 {
         skyDesc.lighting = &scene.params;
         skyDesc.sceneColor = copyColor(worker, sceneIndex);
         skyDesc.time = lightingTime();
+        skyDesc.sceneIndex = sceneIndex;
         if (skyDesc.sceneColor != nullptr) {
             sky->record(worker, skyDesc);
         }
@@ -609,6 +610,7 @@ namespace RT64 {
         params.settings.x = uint32_t(enhancementValue("RT64_LIGHT_DEBUG", 0.0f));
         params.settings.y = uint32_t(getRasterLightingQuality());
         params.settings.z = (depthTarget != nullptr) ? depthTarget->multisampling.sampleCount : 1;
+        params.settings.w = desc.skyHidden ? LIGHTING_SCENE_FLAG_SKY_HIDDEN : 0U;
 
         const uint32_t sceneIndex = uint32_t(scenes.size());
         scenes.emplace_back(scene);

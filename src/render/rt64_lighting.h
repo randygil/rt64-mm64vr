@@ -154,6 +154,9 @@ namespace RT64 {
         interop::float2 screenScale;
         interop::float2 screenOffset;
         RenderViewport viewport;
+
+        // The game has a sky the host removed (e.g. in VR), so the background holds nothing worth keeping.
+        bool skyHidden = false;
     };
 
     struct LightingRenderer {

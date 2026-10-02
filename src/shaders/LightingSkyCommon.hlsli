@@ -68,7 +68,19 @@ namespace interop {
 
     struct LightingSkyCB {
         uint slot;
-        uint3 padding;
+
+        // Index of the scene in its frame, which picks its entry of the analysis of the game's sky.
+        uint sceneIndex;
+        uint2 padding;
+    };
+
+    struct LightingSkyAnalysisCB {
+        uint slot;
+        uint sceneIndex;
+
+        // 1 when the entry of the scene holds nothing yet.
+        uint reset;
+        uint padding;
     };
 
     struct LightingSkyLutCB {

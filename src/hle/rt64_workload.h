@@ -234,6 +234,9 @@ namespace RT64 {
 
         // Position of the world origin in the space the geometry is drawn in. W is 1 if it's known.
         hlslpp::float4 worldOrigin = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+        // The host reported a sky RT64 can't see (see Application::setSkyBackgroundHint).
+        bool skyBackgroundHint = false;
         DebuggerRenderer debuggerRenderer;
         DebuggerCamera debuggerCamera;
         std::multimap<uint32_t, uint32_t> transformIdMap;

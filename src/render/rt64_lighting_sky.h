@@ -37,6 +37,9 @@ namespace RT64 {
 
         // Seconds since the start, for the clouds.
         float time = 0.0f;
+
+        // Index of the scene in its frame. The analysis of the game's sky is kept per scene index across frames.
+        uint32_t sceneIndex = 0;
     };
 
     struct LightingSky {

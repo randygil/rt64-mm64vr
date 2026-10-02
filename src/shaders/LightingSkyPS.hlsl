@@ -22,6 +22,7 @@ Texture2D<float> gDepth : register(t2, space0);
 Texture2D<float4> gSceneColor : register(t3, space0);
 Texture2D<float4> gSkyLut : register(t4, space0);
 SamplerState gLinearSampler : register(s5, space0);
+StructuredBuffer<float4> gSkyAnalysis : register(t6, space0);
 
 float3 sampleSkyLut(float2 coordinates) {
     return gSkyLut.SampleLevel(gLinearSampler, coordinates, 0.0f).rgb;
@@ -98,7 +99,8 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
     const float3 direction = normalize(params.rayOrigin.xyz + pixelPosition.x * params.rayStepX.xyz + pixelPosition.y * params.rayStepY.xyz);
     const uint debugView = params.settings.y;
     const bool replaceAll = ((params.settings.w & LIGHTING_SKY_FLAG_REPLACE_ALL) != 0) || (debugView == 2);
-    float key = replaceAll ? 1.0f : lightingSkyKey(original, params.blendParams.z, params.outputParams.y);
+    // Only skies that look like daytime skies are replaced (see LightingSkyAnalyzeCS).
+    float key = replaceAll ? 1.0f : (lightingSkyKey(original, params.blendParams.z, params.outputParams.y) * gSkyAnalysis[gConstants.sceneIndex].w);
     key *= smoothstep(-0.02f, 0.06f, direction.y);
     if (debugView == 1) {
         return float4(key, key, key, 1.0f);

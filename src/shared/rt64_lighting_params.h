@@ -10,6 +10,9 @@
 
 #include "shared/rt64_hlsl.h"
 
+// Flags of LightingParams::settings.w.
+#define LIGHTING_SCENE_FLAG_SKY_HIDDEN  0x1
+
 // Flags of the draw calls drawn into the normal buffer.
 #define LIGHTING_GBUFFER_ALPHA_TESTED   0x1
 #define LIGHTING_GBUFFER_RSP_LIT        0x2

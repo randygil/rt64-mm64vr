@@ -2145,6 +2145,7 @@ namespace RT64 {
                     sceneDesc.worldUp = p.curWorkload->worldUp;
                     sceneDesc.worldForward = p.curWorkload->worldForward;
                     sceneDesc.worldOrigin = p.curWorkload->worldOrigin;
+                    sceneDesc.skyHidden = p.curWorkload->skyBackgroundHint;
                     sceneDesc.lights = (proj.pointLightCount > 0) ? proj.pointLights.data() : nullptr;
                     sceneDesc.lightCount = proj.pointLightCount;
                     sceneDesc.screenScale = screenScale;

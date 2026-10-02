@@ -14,16 +14,22 @@
 #include "shaders/LightingSkyLutPS.hlsl.spirv.h"
 #include "shaders/LightingSkyPS.hlsl.spirv.h"
 #include "shaders/LightingSkyPSMS.hlsl.spirv.h"
+#include "shaders/LightingSkyAnalyzeCS.hlsl.spirv.h"
+#include "shaders/LightingSkyAnalyzeCSMS.hlsl.spirv.h"
 #ifdef _WIN32
 #   include "shaders/FullScreenVS.hlsl.dxil.h"
 #   include "shaders/LightingSkyLutPS.hlsl.dxil.h"
 #   include "shaders/LightingSkyPS.hlsl.dxil.h"
 #   include "shaders/LightingSkyPSMS.hlsl.dxil.h"
+#   include "shaders/LightingSkyAnalyzeCS.hlsl.dxil.h"
+#   include "shaders/LightingSkyAnalyzeCSMS.hlsl.dxil.h"
 #elif defined(__APPLE__)
 #   include "shaders/FullScreenVS.hlsl.metal.h"
 #   include "shaders/LightingSkyLutPS.hlsl.metal.h"
 #   include "shaders/LightingSkyPS.hlsl.metal.h"
 #   include "shaders/LightingSkyPSMS.hlsl.metal.h"
+#   include "shaders/LightingSkyAnalyzeCS.hlsl.metal.h"
+#   include "shaders/LightingSkyAnalyzeCSMS.hlsl.metal.h"
 #endif
 
 #include "shaders/LightingSkyCommon.hlsli"
@@ -78,12 +84,16 @@ namespace RT64 {
     // Light bounced by the ground onto the clouds, relative to the ground light of the lighting.
     static const float SkyGroundBounce = 0.65f;
 
+    // Scenes of a frame whose game sky is analyzed separately (see LightingSkyAnalyzeCS).
+    static const uint32_t SkyAnalysisCount = 8;
+
     struct LightingSkyDescriptorSet : RenderDescriptorSetBase {
         uint32_t gSkyParams;
         uint32_t gDepth;
         uint32_t gSceneColor;
         uint32_t gSkyLut;
         uint32_t gLinearSampler;
+        uint32_t gSkyAnalysis;
 
         LightingSkyDescriptorSet(const RenderSampler *linearSampler, RenderDevice *device = nullptr) {
             builder.begin();
@@ -92,6 +102,27 @@ namespace RT64 {
             gSceneColor = builder.addTexture(3);
             gSkyLut = builder.addTexture(4);
             gLinearSampler = builder.addImmutableSampler(5, linearSampler);
+            gSkyAnalysis = builder.addStructuredBuffer(6);
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
+    struct LightingSkyAnalysisDescriptorSet : RenderDescriptorSetBase {
+        uint32_t gSkyParams;
+        uint32_t gDepth;
+        uint32_t gSceneColor;
+        uint32_t gAnalysis;
+
+        LightingSkyAnalysisDescriptorSet(RenderDevice *device = nullptr) {
+            builder.begin();
+            gSkyParams = builder.addStructuredBuffer(1);
+            gDepth = builder.addTexture(2);
+            gSceneColor = builder.addTexture(3);
+            gAnalysis = builder.addReadWriteStructuredBuffer(4);
             builder.end();
 
             if (device != nullptr) {
@@ -363,6 +394,12 @@ namespace RT64 {
         std::unique_ptr<RenderFramebuffer> lutFramebuffer;
         std::unique_ptr<RenderBuffer> paramsBuffer;
         std::vector<std::unique_ptr<LightingSkyDescriptorSet>> descriptorSets;
+        std::unique_ptr<RenderPipelineLayout> analysisPipelineLayout;
+        std::unique_ptr<RenderPipeline> analysisPipeline;
+        std::unique_ptr<RenderPipeline> analysisPipelineMS;
+        std::unique_ptr<RenderBuffer> analysisBuffer;
+        std::vector<std::unique_ptr<LightingSkyAnalysisDescriptorSet>> analysisSets;
+        bool analysisValid[SkyAnalysisCount] = {};
         interop::LightingSkyLutCB lutConstants = {};
         bool lutRendered = false;
         uint32_t nextSlot = 0;
@@ -474,6 +511,25 @@ namespace RT64 {
         impl->paramsBuffer = device->createBuffer(RenderBufferDesc::UploadBuffer(sizeof(interop::LightingSkyParams) * SkySlotCount, RenderBufferFlag::STORAGE));
         for (uint32_t i = 0; i < SkySlotCount; i++) {
             impl->descriptorSets.emplace_back(std::make_unique<LightingSkyDescriptorSet>(impl->linearSampler.get(), device));
+            impl->analysisSets.emplace_back(std::make_unique<LightingSkyAnalysisDescriptorSet>(device));
+        }
+
+        // Analysis of the game's sky, which tells whether it can be replaced.
+        {
+            LightingSkyAnalysisDescriptorSet descriptorSet;
+            RenderPipelineLayoutBuilder layoutBuilder;
+            layoutBuilder.begin();
+            layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingSkyAnalysisCB), RenderShaderStageFlag::COMPUTE);
+            layoutBuilder.addDescriptorSet(descriptorSet);
+            layoutBuilder.end();
+            impl->analysisPipelineLayout = layoutBuilder.create(device);
+
+            std::unique_ptr<RenderShader> analysisShader = device->createShader(LIGHTING_SKY_SHADER_INPUTS(LightingSkyAnalyzeCS, "CSMain", shaderFormat));
+            std::unique_ptr<RenderShader> analysisShaderMS = device->createShader(LIGHTING_SKY_SHADER_INPUTS(LightingSkyAnalyzeCSMS, "CSMain", shaderFormat));
+            impl->analysisPipeline = device->createComputePipeline(RenderComputePipelineDesc(impl->analysisPipelineLayout.get(), analysisShader.get(), 64, 1, 1));
+            impl->analysisPipelineMS = device->createComputePipeline(RenderComputePipelineDesc(impl->analysisPipelineLayout.get(), analysisShaderMS.get(), 64, 1, 1));
+            impl->analysisBuffer = device->createBuffer(RenderBufferDesc::DefaultBuffer(sizeof(interop::float4) * SkyAnalysisCount, RenderBufferFlag::STORAGE | RenderBufferFlag::UNORDERED_ACCESS));
+            impl->analysisBuffer->setName("Lighting Sky Analysis");
         }
     }
 
@@ -599,7 +655,9 @@ namespace RT64 {
         params.settings.x = uint32_t(std::clamp(quality, 0, 3));
         params.settings.y = settings.debugView;
         params.settings.z = std::max(colorTarget->multisampling.sampleCount, 1U);
-        params.settings.w = settings.replaceAll ? LIGHTING_SKY_FLAG_REPLACE_ALL : 0U;
+        // When the host removed the game's sky (VR), the background has nothing worth keeping.
+        const bool replaceAll = settings.replaceAll || ((lighting.settings.w & LIGHTING_SCENE_FLAG_SKY_HIDDEN) != 0);
+        params.settings.w = replaceAll ? LIGHTING_SKY_FLAG_REPLACE_ALL : 0U;
 
         const uint32_t slot = impl->nextSlot;
         impl->nextSlot = (slot + 1) % SkySlotCount;
@@ -612,10 +670,37 @@ namespace RT64 {
         descriptorSet->setTexture(descriptorSet->gDepth, desc.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ, desc.depthTarget->textureView.get());
         descriptorSet->setTexture(descriptorSet->gSceneColor, desc.sceneColor, RenderTextureLayout::SHADER_READ);
         descriptorSet->setTexture(descriptorSet->gSkyLut, impl->lutTexture.get(), RenderTextureLayout::SHADER_READ);
+        descriptorSet->setBuffer(descriptorSet->gSkyAnalysis, impl->analysisBuffer.get(), RenderBufferStructuredView(sizeof(interop::float4)));
+
+        // The game's sky is analyzed first, unless all of it is replaced anyway.
+        const uint32_t sceneIndex = desc.sceneIndex % SkyAnalysisCount;
+        if (!replaceAll) {
+            LightingSkyAnalysisDescriptorSet *analysisSet = impl->analysisSets[slot].get();
+            analysisSet->setBuffer(analysisSet->gSkyParams, impl->paramsBuffer.get(), RenderBufferStructuredView(sizeof(interop::LightingSkyParams)));
+            analysisSet->setTexture(analysisSet->gDepth, desc.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ, desc.depthTarget->textureView.get());
+            analysisSet->setTexture(analysisSet->gSceneColor, desc.sceneColor, RenderTextureLayout::SHADER_READ);
+            analysisSet->setBuffer(analysisSet->gAnalysis, impl->analysisBuffer.get(), RenderBufferStructuredView(sizeof(interop::float4)));
+
+            interop::LightingSkyAnalysisCB analysisCB;
+            analysisCB.slot = slot;
+            analysisCB.sceneIndex = sceneIndex;
+            analysisCB.reset = impl->analysisValid[sceneIndex] ? 0U : 1U;
+            analysisCB.padding = 0;
+            impl->analysisValid[sceneIndex] = true;
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(impl->analysisBuffer.get(), RenderBufferAccess::WRITE));
+            worker->commandList->setPipeline((colorTarget->multisampling.sampleCount > 1) ? impl->analysisPipelineMS.get() : impl->analysisPipeline.get());
+            worker->commandList->setComputePipelineLayout(impl->analysisPipelineLayout.get());
+            worker->commandList->setComputePushConstants(0, &analysisCB);
+            worker->commandList->setComputeDescriptorSet(analysisSet->get(), 0);
+            worker->commandList->dispatch(1, 1, 1);
+        }
+
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderBufferBarrier(impl->analysisBuffer.get(), RenderBufferAccess::READ));
 
         interop::LightingSkyCB skyCB;
         skyCB.slot = slot;
-        skyCB.padding = { 0, 0, 0 };
+        skyCB.sceneIndex = sceneIndex;
+        skyCB.padding = { 0, 0 };
         colorTarget->setupColorFramebuffer(worker);
         worker->commandList->setFramebuffer(colorTarget->textureFramebuffer.get());
         worker->commandList->setViewports(RenderViewport(0.0f, 0.0f, float(colorTarget->width), float(colorTarget->height)));

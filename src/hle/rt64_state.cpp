@@ -1797,6 +1797,7 @@ namespace RT64 {
                         const interop::float4x4 &upProjMatrix = workload.drawData.projTransforms[proj.transformsIndex];
                         const float upSign = ((upViewMatrix[1][1] * upProjMatrix[1][1]) < 0.0f) ? -1.0f : 1.0f;
                         workload.worldUp = worldViewRotationValid ? hlslpp::float3(worldViewRotation[1], worldViewRotation[4], worldViewRotation[7]) : hlslpp::float3(0.0f, upSign, 0.0f);
+                        workload.skyBackgroundHint = skyBackgroundHint;
                         workload.worldRight = worldViewRotationValid ? hlslpp::float3(worldViewRotation[0], worldViewRotation[3], worldViewRotation[6]) : hlslpp::float3(1.0f, 0.0f, 0.0f);
                         workload.worldOrigin = (worldViewRotationValid && worldViewTranslationValid) ? hlslpp::float4(worldViewTranslation[0], worldViewTranslation[1], worldViewTranslation[2], 1.0f) : hlslpp::float4(0.0f, 0.0f, 0.0f, 0.0f);
                         workload.worldForward = worldViewRotationValid ? hlslpp::float3(worldViewRotation[2], worldViewRotation[5], worldViewRotation[8]) : hlslpp::float3(0.0f, 0.0f, 1.0f);
