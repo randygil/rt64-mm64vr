@@ -52,13 +52,18 @@ float3 skyLightTint(LightingParams params) {
 // Shadows of the clouds of the procedural sky: the shapes of its cloud layer (the same noise, wind and coverage), found
 // where the ray from the position towards the sun crosses the layer. 1 is lit.
 float cloudShadow(LightingParams params, float3 position) {
+    // The entry of the analysis is only valid (and only read) when the CPU enabled the shadows. A NaN fails the
+    // comparisons and turns them off too.
     float strength = params.cloudShadowParams.w;
-    if ((params.settings.w & LIGHTING_SCENE_FLAG_SKY_HIDDEN) == 0) {
-        strength *= saturate(gSkyAnalysis[gConstants.sceneIndex % 8].w);
+    if (!(strength > 0.0f)) {
+        return 1.0f;
     }
 
-    if (strength <= 0.0f) {
-        return 1.0f;
+    if ((params.settings.w & LIGHTING_SCENE_FLAG_SKY_HIDDEN) == 0) {
+        strength *= saturate(gSkyAnalysis[gConstants.sceneIndex % 8].w);
+        if (!(strength > 0.0f)) {
+            return 1.0f;
+        }
     }
 
     // In sky space (y up) and cloud heights, from the origin of the world.
@@ -267,10 +272,11 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
     // pass rejected: the normal from the depth there mixes both surfaces and leaves dark lines along the edge.
     float4 normalSample = gNormalBuffer.Load(int3(pixel, 0));
 #ifndef MULTISAMPLING
-    const float tolerance = max(CoplanarDepthTolerance(depth), 1e-5f);
+    const float tolerance = max(CoplanarDepthTolerance(depth) * 4.0f, 1e-5f);
 #endif
     const bool farSurfacePass = (gConstants.surfacePass == 1);
-    if (farSurfacePass || (normalSample.w <= 0.5f)) {
+    const bool gbufferScene = ((params.settings.w & LIGHTING_SCENE_FLAG_GBUFFER) != 0);
+    if (farSurfacePass || ((normalSample.w <= 0.5f) && gbufferScene)) {
         const int2 Neighbors[4] = { int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1) };
         normalSample = float4(0.0f, 0.0f, 0.0f, 0.0f);
         for (uint n = 0; n < 4; n++) {
@@ -315,7 +321,10 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
         const float NdotL = dot(normal, params.sunDirection.xyz);
         const float wrap = foliage ? params.foliageParams.x : params.lightingParams.z;
         const float diffuse = saturate((NdotL + wrap) / (1.0f + wrap));
-        shadow = min(sampleShadow(params, position, normal, NdotL, foliageRadius), contact) * cloudShadow(params, position);
+        shadow = min(sampleShadow(params, position, normal, NdotL, foliageRadius), contact);
+        if (shadow > 0.0f) {
+            shadow *= cloudShadow(params, position);
+        }
 
         // Leaves are never completely dark, as light goes through them and bounces inside the canopy.
         if (foliage) {

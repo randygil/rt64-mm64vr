@@ -562,8 +562,9 @@ namespace RT64 {
             impl->settingsCounter = 1;
         }
 
+        // Off on the low quality preset (integrated GPUs, standalone headsets), where every per pixel cost counts.
         const SkySettings &settings = impl->settings;
-        if ((settings.groundShadow <= 0.0f) || (settings.cloudOpacity <= 0.0f) || (settings.cloudCoverage <= 0.0f)) {
+        if ((quality <= 0) || (settings.groundShadow <= 0.0f) || (settings.cloudOpacity <= 0.0f) || (settings.cloudCoverage <= 0.0f)) {
             return;
         }
 
@@ -579,7 +580,7 @@ namespace RT64 {
         offset = interop::float4(
             float(wrapPeriod(windX * travel, SkyNoisePeriod)), float(wrapPeriod(windZ * travel, SkyNoisePeriod)),
             float(wrapPeriod(windX * warpTravel, SkyNoisePeriod)), float(wrapPeriod(windZ * warpTravel, SkyNoisePeriod)));
-        misc = interop::float4(settings.cloudWarp, settings.groundShadowSoftness, (quality <= 0) ? 0.0f : 3.0f, 0.0f);
+        misc = interop::float4(settings.cloudWarp, settings.groundShadowSoftness, 3.0f, 0.0f);
     }
 
     bool LightingSky::enabled() const {
