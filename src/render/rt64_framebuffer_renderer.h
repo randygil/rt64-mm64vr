@@ -94,6 +94,8 @@ namespace RT64 {
         BufferPair interleavedRastersBuffer;
         uint32_t interleavedRastersCount = 0;
         BufferPair frameParamsBuffer;
+        BufferPair smoothNormalGroupsBuffer;
+        std::vector<interop::uint4> smoothNormalGroups;
         RenderPipelineLayout *rendererPipelineLayout = nullptr;
         RenderPipeline *postBlendDitherNoiseAddPipeline = nullptr;
         RenderPipeline *postBlendDitherNoiseSubPipeline = nullptr;

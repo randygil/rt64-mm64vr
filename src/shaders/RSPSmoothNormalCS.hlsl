@@ -7,14 +7,16 @@
 //
 // Every triangle is compared with every other one of the draw call, so the triangles are walked in tiles that the
 // group loads once into shared memory with their face normals, instead of every thread reading them all from memory.
+// All the draw calls of a frame are done in a single dispatch: each group reads its range of indices, the first of its
+// triangles and the crease from a table (one entry per group).
 //
 
 #define GROUP_SIZE 64
 
 struct RSPSmoothNormalCB {
-    uint indexStart;
-    uint indexCount;
-    float creaseCosine;
+    uint groupCount;
+    uint padding0;
+    uint padding1;
 };
 
 [[vk::push_constant]] ConstantBuffer<RSPSmoothNormalCB> gConstants : register(b0);
@@ -22,6 +24,9 @@ StructuredBuffer<float4> srcWorldPos : register(t1);
 StructuredBuffer<uint> srcCol : register(t2);
 StructuredBuffer<uint> srcFaceIndices : register(t3);
 RWStructuredBuffer<float4> dstWorldNorm : register(u4);
+
+// x first index of the range, y index count of the range, z first triangle of the group in the range, w crease cosine.
+StructuredBuffer<uint4> srcGroups : register(t5);
 
 groupshared float3 gTilePositions[GROUP_SIZE * 3];
 groupshared float4 gTileNormals[GROUP_SIZE];
@@ -34,14 +39,18 @@ float4 faceNormal(float3 a, float3 b, float3 c) {
 }
 
 [numthreads(GROUP_SIZE, 1, 1)]
-void CSMain(uint triangleIndex : SV_DispatchThreadID, uint localIndex : SV_GroupIndex) {
-    const uint triangleCount = gConstants.indexCount / 3;
+void CSMain(uint3 groupId : SV_GroupID, uint localIndex : SV_GroupIndex) {
+    const uint4 group = srcGroups[groupId.x];
+    const uint indexStart = group.x;
+    const uint triangleCount = group.y / 3;
+    const float creaseCosine = asfloat(group.w);
+    const uint triangleIndex = group.z + localIndex;
     const bool ownTriangle = (triangleIndex < triangleCount);
     uint vertexIndices[3] = { 0, 0, 0 };
     float3 positions[3] = { float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f), float3(0.0f, 0.0f, 0.0f) };
     float4 ownNormal = float4(0.0f, 0.0f, 0.0f, 0.0f);
     if (ownTriangle) {
-        const uint baseIndex = gConstants.indexStart + triangleIndex * 3;
+        const uint baseIndex = indexStart + triangleIndex * 3;
         for (uint k = 0; k < 3; k++) {
             vertexIndices[k] = srcFaceIndices[baseIndex + k];
             positions[k] = srcWorldPos[vertexIndices[k]].xyz;
@@ -56,7 +65,7 @@ void CSMain(uint triangleIndex : SV_DispatchThreadID, uint localIndex : SV_Group
         // Every thread of the group loads one triangle of the tile.
         const uint tileTriangle = tileStart + localIndex;
         if (tileTriangle < triangleCount) {
-            const uint baseIndex = gConstants.indexStart + tileTriangle * 3;
+            const uint baseIndex = indexStart + tileTriangle * 3;
             const float3 a = srcWorldPos[srcFaceIndices[baseIndex + 0]].xyz;
             const float3 b = srcWorldPos[srcFaceIndices[baseIndex + 1]].xyz;
             const float3 c = srcWorldPos[srcFaceIndices[baseIndex + 2]].xyz;
@@ -75,7 +84,7 @@ void CSMain(uint triangleIndex : SV_DispatchThreadID, uint localIndex : SV_Group
             const uint tileCount = min(uint(GROUP_SIZE), triangleCount - tileStart);
             for (uint t = 0; t < tileCount; t++) {
                 const float4 n = gTileNormals[t];
-                if ((n.w <= 0.0f) || (dot(n.xyz, ownNormal.xyz) < gConstants.creaseCosine)) {
+                if ((n.w <= 0.0f) || (dot(n.xyz, ownNormal.xyz) < creaseCosine)) {
                     continue;
                 }
 

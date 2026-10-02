@@ -606,6 +606,7 @@ namespace RT64 {
         uint32_t srcCol;
         uint32_t srcFaceIndices;
         uint32_t dstWorldNorm;
+        uint32_t srcGroups;
 
         RSPSmoothNormalDescriptorSet(RenderDevice *device = nullptr) {
             builder.begin();
@@ -613,6 +614,7 @@ namespace RT64 {
             srcCol = builder.addStructuredBuffer(2);
             srcFaceIndices = builder.addStructuredBuffer(3);
             dstWorldNorm = builder.addReadWriteStructuredBuffer(4);
+            srcGroups = builder.addStructuredBuffer(5);
             builder.end();
 
             if (device != nullptr) {

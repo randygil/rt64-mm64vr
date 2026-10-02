@@ -689,6 +689,9 @@ namespace RT64 {
         smoothDescSet->setBuffer(smoothDescSet->srcCol, drawBuffers->normalColorBuffer.get(), drawBuffers->normalColorBuffer.allocatedSize, RenderBufferStructuredView(sizeof(uint8_t) * 4));
         smoothDescSet->setBuffer(smoothDescSet->srcFaceIndices, drawBuffers->faceIndicesBuffer.get(), drawBuffers->faceIndicesBuffer.allocatedSize, RenderBufferStructuredView(sizeof(uint32_t)));
         smoothDescSet->setBuffer(smoothDescSet->dstWorldNorm, outputBuffers->worldNormBuffer.buffer.get(), outputBuffers->worldNormBuffer.allocatedSize, RenderBufferStructuredView(sizeof(float) * 4));
+        if (smoothNormalGroupsBuffer.get() != nullptr) {
+            smoothDescSet->setBuffer(smoothDescSet->srcGroups, smoothNormalGroupsBuffer.get(), RenderBufferStructuredView(sizeof(interop::uint4)));
+        }
     }
 
     void FramebufferRenderer::updateRSPVertexTestZSet(RenderWorker *worker, const DrawBuffers *drawBuffers, const OutputBuffers *outputBuffers) {
@@ -1682,19 +1685,23 @@ namespace RT64 {
             return;
         }
         
+        if (smoothNormalGroups.empty() || (smoothNormalGroupsBuffer.get() == nullptr)) {
+            return;
+        }
+
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(outputBuffers->worldNormBuffer.buffer.get(), RenderBufferAccess::WRITE));
 
-        const int ThreadGroupSize = 64;
+        // All the ranges in one dispatch, with one group per tile of triangles of each range (see endFramebuffers).
         const auto &rspSmoothNormal = shaderLibrary->rspSmoothNormal;
-        for (const RSPSmoothNormalGenerationCB &cb : rspSmoothNormalVector) {
-            const uint32_t triangleCount = cb.indexCount / 3;
-            const uint32_t dispatchCount = (triangleCount + ThreadGroupSize - 1) / ThreadGroupSize;
-            worker->commandList->setPipeline(rspSmoothNormal.pipeline.get());
-            worker->commandList->setComputePipelineLayout(rspSmoothNormal.pipelineLayout.get());
-            worker->commandList->setComputePushConstants(0, &cb);
-            worker->commandList->setComputeDescriptorSet(smoothDescSet->get(), 0);
-            worker->commandList->dispatch(dispatchCount, 1, 1);
-        }
+        RSPSmoothNormalGenerationCB cb;
+        cb.indexStart = uint32_t(smoothNormalGroups.size());
+        cb.indexCount = 0;
+        cb.creaseCosine = 0.0f;
+        worker->commandList->setPipeline(rspSmoothNormal.pipeline.get());
+        worker->commandList->setComputePipelineLayout(rspSmoothNormal.pipelineLayout.get());
+        worker->commandList->setComputePushConstants(0, &cb);
+        worker->commandList->setComputeDescriptorSet(smoothDescSet->get(), 0);
+        worker->commandList->dispatch(uint32_t(smoothNormalGroups.size()), 1, 1);
 
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(outputBuffers->worldNormBuffer.buffer.get(), RenderBufferAccess::READ));
     }
@@ -2580,6 +2587,21 @@ namespace RT64 {
         lightingBuffersActive = (lighting != nullptr) && !lighting->empty();
         if (lighting != nullptr) {
             lighting->finish(worker, instanceDrawCallVector, shaderUploads);
+        }
+
+        // Table of the groups of the smooth normals: every range of indices is split into tiles of 64 triangles.
+        smoothNormalGroups.clear();
+        for (const RSPSmoothNormalGenerationCB &range : rspSmoothNormalVector) {
+            const uint32_t triangleCount = range.indexCount / 3;
+            uint32_t creaseBits;
+            memcpy(&creaseBits, &range.creaseCosine, sizeof(creaseBits));
+            for (uint32_t firstTriangle = 0; firstTriangle < triangleCount; firstTriangle += 64) {
+                smoothNormalGroups.push_back({ range.indexStart, range.indexCount, firstTriangle, creaseBits });
+            }
+        }
+
+        if (!smoothNormalGroups.empty()) {
+            shaderUploads.push_back({ smoothNormalGroups.data(), { 0, smoothNormalGroups.size() }, sizeof(interop::uint4), RenderBufferFlag::STORAGE, { }, &smoothNormalGroupsBuffer });
         }
 
         shaderUploader->submit(worker, shaderUploads);
