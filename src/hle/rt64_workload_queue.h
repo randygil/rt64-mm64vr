@@ -96,6 +96,7 @@ namespace RT64 {
         std::unique_ptr<VertexProcessor> vertexProcessor;
         std::unique_ptr<RenderTarget> dummyDepthTarget;
         std::unique_ptr<RenderQueryPool> queryPool;
+        std::unique_ptr<RenderQueryPool> markerQueryPool;
         FramebufferChangePool scratchFbChangePool;
         ProfilingTimer rendererCPUProfiler = ProfilingTimer(120);
         ProfilingTimer rendererGPUProfiler = ProfilingTimer(120);

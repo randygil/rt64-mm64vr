@@ -104,6 +104,12 @@ namespace RT64 {
         renderFramebufferManager = std::make_unique<RenderFramebufferManager>(ext.device);
         queryPool = ext.device->createQueryPool(2);
 
+        // RT64_PRINT_FRAME_TIME=2 also measures the GPU time of each pass (see gpuMarker).
+        const char *printFrameTime = getenv("RT64_PRINT_FRAME_TIME");
+        if ((printFrameTime != nullptr) && (atoi(printFrameTime) >= 2)) {
+            markerQueryPool = ext.device->createQueryPool(128);
+        }
+
         projectionProcessor.setup(ext.workloadGraphicsWorker);
         transformProcessor.setup(ext.workloadGraphicsWorker);
         tileProcessor.setup(ext.workloadGraphicsWorker);
@@ -705,6 +711,10 @@ namespace RT64 {
             ext.workloadGraphicsWorker->commandList->begin();
             ext.workloadGraphicsWorker->commandList->resetQueryPool(queryPool.get(), 0, 2);
             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 0);
+            if (markerQueryPool != nullptr) {
+                beginGPUMarkers(ext.workloadGraphicsWorker->commandList.get(), markerQueryPool.get());
+            }
+
             framebufferRenderer->endFramebuffers(ext.workloadGraphicsWorker, &workload.drawBuffers, &workload.outputBuffers, workloadConfig.raytracingEnabled);
             framebufferRenderer->recordSetup(ext.workloadGraphicsWorker, bufferUploaders, processRSP ? rspProcessor.get() : nullptr, processWorldVertices ? vertexProcessor.get() : nullptr, &workload.outputBuffers, workloadConfig.raytracingEnabled);
             
@@ -841,6 +851,7 @@ namespace RT64 {
                     fbPair.endFbOperations, targetManager, fixedResScale, f, workload.submissionFrame);
             }
 
+            endGPUMarkers(ext.workloadGraphicsWorker->commandList.get());
             ext.workloadGraphicsWorker->commandList->writeTimestamp(queryPool.get(), 1);
             ext.workloadGraphicsWorker->commandList->end();
             framebufferRenderer->waitForUploaders();
@@ -854,6 +865,7 @@ namespace RT64 {
             rendererGPUProfiler.log(double(frameTimestamps[1] - frameTimestamps[0]) / 1000000.0);
             gpuTimeAccumulatedMs += double(frameTimestamps[1] - frameTimestamps[0]) / 1000000.0;
             gpuTimeAccumulatedCount++;
+            readGPUMarkers();
 
             // Indicate to the texture cache it's safe to delete the textures if no locks are active.
             ext.textureCache->decrementLock();
@@ -1138,6 +1150,7 @@ namespace RT64 {
                         if (++accumulatedFrames == 120) {
                             const double gpuTimeMs = (gpuTimeAccumulatedCount > 0) ? (gpuTimeAccumulatedMs / gpuTimeAccumulatedCount) : 0.0;
                             fprintf(stderr, "Frame render time: %.2f ms, GPU %.2f ms (RT %s)" "\n", accumulatedMicro / 120000.0, gpuTimeMs, workloadConfig.raytracingEnabled ? "on" : "off");
+                            printGPUMarkers();
                             gpuTimeAccumulatedMs = 0.0;
                             gpuTimeAccumulatedCount = 0;
                             accumulatedMicro = 0;

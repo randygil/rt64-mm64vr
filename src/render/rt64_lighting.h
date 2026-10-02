@@ -183,6 +183,7 @@ namespace RT64 {
         };
 
         struct Caster {
+            uint32_t sceneIndex;
             uint32_t instanceIndex;
             bool alphaTested;
         };
@@ -272,7 +273,7 @@ namespace RT64 {
         void addSceneRect(uint32_t sceneIndex, const RenderRect &rect);
 
         // Adds a draw call that casts shadows.
-        void addCaster(uint32_t instanceIndex, bool alphaTested);
+        void addCaster(uint32_t sceneIndex, uint32_t instanceIndex, bool alphaTested);
 
         // Adds an opaque draw call of a scene to the normal buffer (flags are LIGHTING_GBUFFER_*).
         void addGBufferDraw(uint32_t sceneIndex, uint32_t instanceIndex, uint32_t flags);

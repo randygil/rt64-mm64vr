@@ -1660,7 +1660,7 @@ namespace RT64 {
                 }
 
                 const int32_t fbWidth = std::max(int32_t(fbPair.colorImage.width), 1);
-                const bool skyDrawn = !backgroundRect.isNull() && (backgroundRect.width(false, false) * 2 >= fbWidth);
+                const bool skyDrawn = skyBackgroundHint || (!backgroundRect.isNull() && (backgroundRect.width(false, false) * 2 >= fbWidth));
                 if (perspectiveFound) {
                     if (skyDrawn && (sceneKey != UINT32_MAX)) {
                         exteriorSceneKeys.insert(sceneKey);

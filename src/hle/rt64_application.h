@@ -176,6 +176,10 @@ namespace RT64 {
 
         // Identifies the scene (e.g. the area of the game) so it's remembered as an exterior once it draws a sky.
         void setSceneKey(uint32_t key);
+
+        // Tells that the game has a sky behind the frame being processed even though RT64 can't see it (e.g. the host
+        // removed the 2D sky because it doesn't work in a VR headset), so the scene is lit as an exterior.
+        void setSkyBackgroundHint(bool present);
         void processDisplayLists(uint8_t *memory, uint32_t dlStartAddress, uint32_t dlEndAddress, bool isHLE);
         void updateScreen();
         void destroyShaderCache();

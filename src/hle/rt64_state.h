@@ -111,6 +111,9 @@ namespace RT64 {
         // after several frames in a row without a sky.
         uint32_t sceneKey = UINT32_MAX;
         std::unordered_set<uint32_t> exteriorSceneKeys;
+
+        // The host knows the frame has a sky RT64 can't see (see Application::setSkyBackgroundHint).
+        bool skyBackgroundHint = false;
         uint32_t framesWithoutSky = 0;
         uint32_t displayListAddress;
         uint64_t displayListCounter;

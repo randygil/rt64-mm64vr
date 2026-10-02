@@ -615,8 +615,8 @@ namespace RT64 {
         sceneRect.bottom = std::max(sceneRect.bottom, rect.bottom);
     }
 
-    void LightingRenderer::addCaster(uint32_t instanceIndex, bool alphaTested) {
-        casters.push_back({ instanceIndex, alphaTested });
+    void LightingRenderer::addCaster(uint32_t sceneIndex, uint32_t instanceIndex, bool alphaTested) {
+        casters.push_back({ sceneIndex, instanceIndex, alphaTested });
     }
 
     void LightingRenderer::addGBufferDraw(uint32_t sceneIndex, uint32_t instanceIndex, uint32_t flags) {
@@ -674,6 +674,19 @@ namespace RT64 {
         if (scenes.empty()) {
             return;
         }
+
+        // The shadow map follows the first scene with a sun, usually the main view, and only its draw calls cast shadows
+        // in it. Other scenes are often the same world seen from elsewhere (the other eye in VR), which would draw every
+        // caster twice.
+        uint32_t sunSceneIndex = UINT32_MAX;
+        for (uint32_t i = 0; i < uint32_t(scenes.size()); i++) {
+            if (scenes[i].hasSun) {
+                sunSceneIndex = i;
+                break;
+            }
+        }
+
+        casters.erase(std::remove_if(casters.begin(), casters.end(), [&](const Caster &caster) { return caster.sceneIndex != sunSceneIndex; }), casters.end());
 
         // Parameters of each triangle of the draw calls drawn again by the shadow and normal passes.
         if (mergedDraws) {
@@ -759,14 +772,7 @@ namespace RT64 {
             colorCopyFramebuffer = device->createFramebuffer(RenderFramebufferDesc(&colorAttachment, 1));
         }
 
-        // The shadow map follows the first scene with a sun, usually the main view.
-        const Scene *sunScene = nullptr;
-        for (const Scene &scene : scenes) {
-            if (scene.hasSun) {
-                sunScene = &scene;
-                break;
-            }
-        }
+        const Scene *sunScene = (sunSceneIndex < scenes.size()) ? &scenes[sunSceneIndex] : nullptr;
 
         const float shadowStrength = enhancementValue("RT64_LIGHT_SHADOW_STRENGTH", 1.0f);
         float texelSize = 1.0f;
@@ -958,7 +964,7 @@ namespace RT64 {
         sortedCasters.clear();
         for (const Caster &caster : casters) {
             if (!caster.alphaTested || !alphaTestedShadows) {
-                sortedCasters.push_back({ caster.instanceIndex, false });
+                sortedCasters.push_back({ caster.sceneIndex, caster.instanceIndex, false });
             }
         }
 

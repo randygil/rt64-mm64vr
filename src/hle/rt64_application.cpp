@@ -489,6 +489,10 @@ namespace RT64 {
         state->sceneKey = key;
     }
 
+    void Application::setSkyBackgroundHint(bool present) {
+        state->skyBackgroundHint = present;
+    }
+
     void Application::setWorldViewRotation(const float *rotation) {
         state->worldViewRotationValid = (rotation != nullptr);
         if (rotation != nullptr) {

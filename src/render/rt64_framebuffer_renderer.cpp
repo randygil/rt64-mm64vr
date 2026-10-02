@@ -187,6 +187,96 @@ namespace RT64 {
         const char *value = getenv(name);
         return (value != nullptr) ? float(atof(value)) : defaultValue;
     }
+
+    struct GPUMarkerState {
+        static const uint32_t MaxMarkers = 128;
+        RenderQueryPool *queryPool = nullptr;
+        RenderQueryPool *pendingQueryPool = nullptr;
+        uint32_t count = 0;
+        uint32_t pendingCount = 0;
+        const char *names[MaxMarkers] = {};
+        std::vector<std::pair<std::string, double>> totals;
+        uint32_t frames = 0;
+    };
+
+    static GPUMarkerState gpuMarkerState;
+
+    void gpuMarker(RenderCommandList *commandList, const char *name) {
+        GPUMarkerState &s = gpuMarkerState;
+        if ((s.queryPool == nullptr) || (s.count >= GPUMarkerState::MaxMarkers)) {
+            return;
+        }
+
+        commandList->writeTimestamp(s.queryPool, s.count);
+        s.names[s.count++] = name;
+    }
+
+    void beginGPUMarkers(RenderCommandList *commandList, RenderQueryPool *queryPool) {
+        GPUMarkerState &s = gpuMarkerState;
+        s.queryPool = queryPool;
+        s.count = 0;
+        commandList->resetQueryPool(queryPool, 0, GPUMarkerState::MaxMarkers);
+        gpuMarker(commandList, "start");
+    }
+
+    void endGPUMarkers(RenderCommandList *commandList) {
+        GPUMarkerState &s = gpuMarkerState;
+        if (s.queryPool == nullptr) {
+            return;
+        }
+
+        gpuMarker(commandList, "end of frame");
+
+        // Vulkan only returns the results when all the queries of the pool were written.
+        for (uint32_t i = s.count; i < GPUMarkerState::MaxMarkers; i++) {
+            commandList->writeTimestamp(s.queryPool, i);
+        }
+
+        s.pendingQueryPool = s.queryPool;
+        s.pendingCount = s.count;
+        s.queryPool = nullptr;
+    }
+
+    void readGPUMarkers() {
+        GPUMarkerState &s = gpuMarkerState;
+        if (s.pendingQueryPool == nullptr) {
+            return;
+        }
+
+        s.pendingQueryPool->queryResults();
+        const uint64_t *results = s.pendingQueryPool->getResults();
+        for (uint32_t i = 1; i < s.pendingCount; i++) {
+            const double ms = double(results[i] - results[i - 1]) / 1000000.0;
+            auto it = std::find_if(s.totals.begin(), s.totals.end(), [&](const auto &total) { return total.first == s.names[i]; });
+            if (it != s.totals.end()) {
+                it->second += ms;
+            }
+            else {
+                s.totals.emplace_back(s.names[i], ms);
+            }
+        }
+
+        s.frames++;
+        s.pendingQueryPool = nullptr;
+    }
+
+    void printGPUMarkers() {
+        GPUMarkerState &s = gpuMarkerState;
+        if (s.frames == 0) {
+            return;
+        }
+
+        std::string line = "GPU passes (ms):";
+        char buffer[128];
+        for (const auto &total : s.totals) {
+            snprintf(buffer, sizeof(buffer), " %s %.3f,", total.first.c_str(), total.second / s.frames);
+            line += buffer;
+        }
+
+        fprintf(stderr, "%s\n", line.c_str());
+        s.totals.clear();
+        s.frames = 0;
+    }
     
     RenderRect convertFixedRect(FixedRect rect, hlslpp::float2 resScale, int32_t fbWidth, float aspectRatioScale, float extOriginPercentage, int32_t horizontalMisalignment, uint16_t leftOrigin, uint16_t rightOrigin) {
         if (!rect.isNull()) {
@@ -792,12 +882,18 @@ namespace RT64 {
             case InstanceDrawCall::Type::Lighting: {
                 if ((lighting != nullptr) && (fbStorage->colorTarget != nullptr)) {
                     // The lighting reads the depth buffer, so it's switched to the read only layout first.
+                    gpuMarker(worker->commandList.get(), "raster");
                     submitDepthAccess(worker, fbStorage, true, depthState);
+                    gpuMarker(worker->commandList.get(), "depth to read");
                     lighting->recordGBuffer(worker, drawCall.lighting.sceneIndex, descCommonSet->get(), descTextureSet->get(), descRealFbSet, indexedVertexViews.data(),
                         vertexInputSlots.data(), uint32_t(indexedVertexViews.size()), &indexBufferView, instanceDrawCallVector);
+                    gpuMarker(worker->commandList.get(), "gbuffer");
                     lighting->recordAmbientOcclusion(worker, drawCall.lighting.sceneIndex);
+                    gpuMarker(worker->commandList.get(), "ao");
                     lighting->recordCompose(worker, drawCall.lighting.sceneIndex);
+                    gpuMarker(worker->commandList.get(), "compose");
                     lighting->recordSky(worker, drawCall.lighting.sceneIndex);
+                    gpuMarker(worker->commandList.get(), "sky");
                     worker->commandList->setFramebuffer(fbStorage->colorWriteDepthRead.get());
                     switchToGraphicsPipeline();
                 }
@@ -806,8 +902,10 @@ namespace RT64 {
             };
             case InstanceDrawCall::Type::PostScene: {
                 if ((lighting != nullptr) && (fbStorage->colorTarget != nullptr) && lighting->postEffects->enabled()) {
+                    gpuMarker(worker->commandList.get(), "raster");
                     submitDepthAccess(worker, fbStorage, true, depthState);
                     lighting->recordPostEffects(worker, drawCall.lighting.sceneIndex);
+                    gpuMarker(worker->commandList.get(), "post");
                     worker->commandList->setFramebuffer(fbStorage->colorWriteDepthRead.get());
                     switchToGraphicsPipeline();
                 }
@@ -1629,16 +1727,20 @@ namespace RT64 {
             uploader->commandListAfterBarriers(worker);
         }
 
+        gpuMarker(worker->commandList.get(), "uploads");
         if (rspProcessor != nullptr) {
             rspProcessor->recordCommandList(worker, shaderLibrary, outputBuffers);
+            gpuMarker(worker->commandList.get(), "rsp");
         }
 
         if (vertexProcessor != nullptr) {
             vertexProcessor->recordCommandList(worker, shaderLibrary, outputBuffers);
+            gpuMarker(worker->commandList.get(), "world vertices");
         }
 
         if (lightingBuffersActive && !rtEnabled && (vertexProcessor != nullptr) && !rspSmoothNormalVector.empty()) {
             submitRSPSmoothNormalCompute(worker, outputBuffers);
+            gpuMarker(worker->commandList.get(), "smooth normals");
         }
 
 #   if RT_ENABLED
@@ -1684,6 +1786,7 @@ namespace RT64 {
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS, startBarriers);
 
         // The shadow map of the enhanced lighting is drawn before the framebuffer that uses it.
+        gpuMarker(worker->commandList.get(), "framebuffer setup");
         if ((lighting != nullptr) && framebuffer.hasLighting) {
             if ((worldPosBuffer != nullptr) && (worldNormBuffer != nullptr)) {
                 worker->commandList->barriers(RenderBarrierStage::GRAPHICS, { RenderBufferBarrier(worldPosBuffer, RenderBufferAccess::READ), RenderBufferBarrier(worldNormBuffer, RenderBufferAccess::READ) });
@@ -1691,6 +1794,7 @@ namespace RT64 {
 
             lighting->recordShadowMap(worker, descCommonSet->get(), descTextureSet->get(), framebuffer.descDummyFbSet->get(), shadowVertexViews.data(), vertexInputSlots.data(),
                 uint32_t(shadowVertexViews.size()), &indexBufferView, instanceDrawCallVector);
+            gpuMarker(worker->commandList.get(), "shadow map");
         }
 
         bool depthState = false;
@@ -2282,7 +2386,7 @@ namespace RT64 {
                                 const uint32_t callInstanceIndex = uint32_t(instanceDrawCallVector.size());
                                 const bool alphaTested = otherMode.cvgXAlpha() || (otherMode.alphaCompare() != G_AC_NONE);
                                 const bool rspLit = call.callDesc.rspLit;
-                                lighting->addCaster(callInstanceIndex, alphaTested);
+                                lighting->addCaster(uint32_t(lightingSceneIndex), callInstanceIndex, alphaTested);
 
                                 // Unlit cutouts are usually foliage drawn as flat cards.
                                 uint32_t gbufferFlags = 0;
