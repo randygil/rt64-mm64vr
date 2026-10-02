@@ -1030,9 +1030,17 @@ namespace RT64 {
                 params.shadowParams = hlslpp::float4(texelSize, enhancementValue("RT64_LIGHT_SHADOW_BIAS", 1.0f) * texelSize / depthRange,
                     enhancementValue("RT64_LIGHT_SHADOW_NORMAL_OFFSET", 1.5f), enhancementValue("RT64_LIGHT_SHADOW_SOFTNESS", 1.0f));
                 params.shadowMapParams = hlslpp::float4(1.0f / mapSize, 1.0f / mapSize, shadowStrength, depthRange);
+
+                // From medium quality up the penumbra widens with the distance to the caster, like under a real sun.
+                static const float MaxSoftness[] = { 0.0f, 5.0f, 6.0f, 8.0f };
+                const int quality = getRasterLightingQuality();
+                const float sunSize = (quality >= 1) ? enhancementValue("RT64_LIGHT_SHADOW_SUN_SIZE", 0.025f) : 0.0f;
+                params.shadowParams2 = hlslpp::float4(tanf(std::clamp(sunSize, 0.0f, 0.3f)), enhancementValue("RT64_LIGHT_SHADOW_MIN_SOFTNESS", 0.75f),
+                    enhancementValue("RT64_LIGHT_SHADOW_MAX_SOFTNESS", MaxSoftness[quality]), 0.0f);
             }
             else {
                 params.shadowMapParams = hlslpp::float4(1.0f / mapSize, 1.0f / mapSize, 0.0f, 0.0f);
+                params.shadowParams2 = hlslpp::float4(0.0f, 0.0f, 0.0f, 0.0f);
             }
 
             if (pointShadowActive && !scene.hasSun && (float(params.pointLightPosition.w) > 0.0f)) {

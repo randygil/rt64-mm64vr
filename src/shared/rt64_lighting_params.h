@@ -78,6 +78,10 @@ namespace interop {
         // world units.
         float4 shadowMapParams;
 
+        // Shadows that get softer away from what casts them (PCSS): x tangent of the angular radius of the sun (0 keeps the
+        // fixed softness of shadowParams), y least and z most softness in texels.
+        float4 shadowParams2;
+
         // x overall strength, y exposure, z wrap of the sun's diffuse term, w strength of the shading from the normals.
         float4 lightingParams;
 

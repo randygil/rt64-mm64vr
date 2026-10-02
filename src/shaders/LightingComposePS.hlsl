@@ -222,6 +222,41 @@ float sampleShadow(LightingParams params, float3 position, float3 normal, float 
     if (quality == 0) {
         lit = gShadowMap.SampleCmpLevelZero(gShadowSampler, shadowUV, referenceDepth);
     }
+    else if (params.shadowParams2.x > 0.0f) {
+        // Percentage closer soft shadows: the average depth of the casters found around the pixel gives how far they are
+        // and so how wide the penumbra of the sun is there. Both passes take points of a golden angle spiral.
+        const uint searchTaps = (quality >= 3) ? 16 : ((quality >= 2) ? 12 : 8);
+        const uint filterTaps = (quality >= 3) ? 24 : ((quality >= 2) ? 16 : 12);
+        const float2 mapSize = 1.0f / params.shadowMapParams.xy;
+        const float maxSoftness = params.shadowParams2.z;
+        float blockerSum = 0.0f;
+        float blockerCount = 0.0f;
+        for (uint i = 0; i < searchTaps; i++) {
+            const float angle = float(i) * 2.39996323f;
+            const float2 offset = float2(cos(angle), sin(angle)) * sqrt((float(i) + 0.5f) / float(searchTaps));
+            const int2 texel = int2((shadowUV + offset * maxSoftness * params.shadowMapParams.xy) * mapSize);
+            const float depth = gShadowMap.Load(int3(clamp(texel, int2(0, 0), int2(mapSize) - 1), 0));
+            if (depth < referenceDepth) {
+                blockerSum += depth;
+                blockerCount += 1.0f;
+            }
+        }
+
+        if (blockerCount <= 0.0f) {
+            lit = 1.0f;
+        }
+        else {
+            const float casterDistance = (referenceDepth - blockerSum / blockerCount) * params.shadowMapParams.w;
+            const float softness = clamp(casterDistance * params.shadowParams2.x / texelSize, params.shadowParams2.y, maxSoftness);
+            for (uint i = 0; i < filterTaps; i++) {
+                const float angle = float(i) * 2.39996323f;
+                const float2 offset = float2(cos(angle), sin(angle)) * sqrt((float(i) + 0.5f) / float(filterTaps));
+                lit += gShadowMap.SampleCmpLevelZero(gShadowSampler, shadowUV + offset * softness * params.shadowMapParams.xy, referenceDepth);
+            }
+
+            lit /= float(filterTaps);
+        }
+    }
     else if (quality >= 3) {
         [unroll]
         for (int y = -2; y <= 2; y++) {
