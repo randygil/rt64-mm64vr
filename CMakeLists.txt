@@ -436,7 +436,11 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/contrib/miniz/miniz.c"
 )
 
-list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/src/render/rt64_lighting.cpp")
+list(APPEND SOURCES
+    "${PROJECT_SOURCE_DIR}/src/render/rt64_lighting.cpp"
+    "${PROJECT_SOURCE_DIR}/src/render/rt64_lighting_sky.cpp"
+    "${PROJECT_SOURCE_DIR}/src/render/rt64_post_effects.cpp"
+)
 
 if (RT64_RAYTRACING)
     list(APPEND SOURCES
@@ -597,6 +601,8 @@ build_vertex_shader( rt64 "src/shaders/LightingShadowVS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/LightingShadowPS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/LightingComposePS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/LightingComposePS.hlsl" "src/shaders/LightingComposePSMS.hlsl" "-D MULTISAMPLING")
+build_pixel_shader(  rt64 "src/shaders/LightingCopyPS.hlsl")
+build_pixel_shader(  rt64 "src/shaders/LightingCopyPS.hlsl" "src/shaders/LightingCopyPSMS.hlsl" "-D MULTISAMPLING")
 build_vertex_shader( rt64 "src/shaders/LightingGBufferVS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/LightingGBufferPS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/LightingGBufferPS.hlsl" "src/shaders/LightingGBufferPSMS.hlsl" "-D MULTISAMPLING")

@@ -786,6 +786,17 @@ namespace RT64 {
                     lighting->recordGBuffer(worker, drawCall.lighting.sceneIndex, descCommonSet->get(), descTextureSet->get(), descRealFbSet, indexedVertexViews.data(),
                         vertexInputSlots.data(), uint32_t(indexedVertexViews.size()), &indexBufferView, instanceDrawCallVector);
                     lighting->recordCompose(worker, drawCall.lighting.sceneIndex);
+                    lighting->recordSky(worker, drawCall.lighting.sceneIndex);
+                    worker->commandList->setFramebuffer(fbStorage->colorWriteDepthRead.get());
+                    switchToGraphicsPipeline();
+                }
+
+                break;
+            };
+            case InstanceDrawCall::Type::PostScene: {
+                if ((lighting != nullptr) && (fbStorage->colorTarget != nullptr) && lighting->postEffects->enabled()) {
+                    submitDepthAccess(worker, fbStorage, true, depthState);
+                    lighting->recordPostEffects(worker, drawCall.lighting.sceneIndex);
                     worker->commandList->setFramebuffer(fbStorage->colorWriteDepthRead.get());
                     switchToGraphicsPipeline();
                 }
@@ -1904,6 +1915,14 @@ namespace RT64 {
             instanceDrawCallVector.push_back(markerDrawCall);
             rasterScene.instanceIndices.insert(rasterScene.instanceIndices.end(), lightingDeferred.begin(), lightingDeferred.end());
             lightingDeferred.clear();
+
+            // The post effects of the scene go after its translucent surfaces and before anything else drawn on top.
+            InstanceDrawCall postDrawCall;
+            postDrawCall.type = InstanceDrawCall::Type::PostScene;
+            postDrawCall.lighting.sceneIndex = uint32_t(lightingSceneIndex);
+            renderIndicesVector.push_back(markerIndices);
+            rasterScene.instanceIndices.push_back(uint32_t(instanceDrawCallVector.size()));
+            instanceDrawCallVector.push_back(postDrawCall);
             lightingLitViewProjs.push_back(lightingViewProj);
             lightingSceneIndex = -1;
             framebuffer.hasLighting = true;

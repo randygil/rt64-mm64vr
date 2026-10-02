@@ -19,7 +19,8 @@ namespace RT64 {
             RegularRect,
             FillRect,
             VertexTestZ,
-            Lighting
+            Lighting,
+            PostScene
         };
 
         Type type;

@@ -21,6 +21,8 @@
 #include "rt64_buffer_uploader.h"
 #include "rt64_descriptor_sets.h"
 #include "rt64_framebuffer_renderer_call.h"
+#include "rt64_lighting_sky.h"
+#include "rt64_post_effects.h"
 #include "rt64_render_target.h"
 
 namespace RT64 {
@@ -48,6 +50,20 @@ namespace RT64 {
             gShadowMap = builder.addTexture(3);
             gShadowSampler = builder.addImmutableSampler(4, shadowSampler);
             gNormalBuffer = builder.addTexture(5);
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
+    struct LightingCopyDescriptorSet : RenderDescriptorSetBase {
+        uint32_t gInput;
+
+        LightingCopyDescriptorSet(RenderDevice *device = nullptr) {
+            builder.begin();
+            gInput = builder.addTexture(1);
             builder.end();
 
             if (device != nullptr) {
@@ -140,6 +156,18 @@ namespace RT64 {
         bool foliageNormalsSupported = false;
         bool gbufferEnabled = true;
         std::unique_ptr<RenderPipelineLayout> composePipelineLayout;
+        std::unique_ptr<RenderPipelineLayout> copyPipelineLayout;
+        std::unique_ptr<RenderShader> copyPixelShader;
+        std::unique_ptr<RenderShader> copyPixelShaderMS;
+        std::map<std::pair<uint32_t, RenderFormat>, std::unique_ptr<RenderPipeline>> copyPipelines;
+        std::vector<std::unique_ptr<LightingCopyDescriptorSet>> copySets;
+        std::unique_ptr<RenderTexture> colorCopyTexture;
+        std::unique_ptr<RenderFramebuffer> colorCopyFramebuffer;
+        uint32_t colorCopyWidth = 0;
+        uint32_t colorCopyHeight = 0;
+        RenderFormat colorCopyFormat = RenderFormat::UNKNOWN;
+        std::unique_ptr<LightingSky> sky;
+        std::unique_ptr<PostEffects> postEffects;
         std::map<std::pair<uint32_t, RenderFormat>, ComposePipelines> composePipelines;
         std::unique_ptr<RenderTexture> shadowMap;
         std::unique_ptr<RenderTextureView> shadowMapView;
@@ -193,6 +221,16 @@ namespace RT64 {
 
         // Lights the color target of a scene. The depth target must be readable (depth read layout).
         void recordCompose(RenderWorker *worker, uint32_t sceneIndex);
+
+        // Replaces the sky of the background of a scene, after it's lit. The depth target must be readable.
+        void recordSky(RenderWorker *worker, uint32_t sceneIndex);
+
+        // Applies the post effects to a scene, after its translucent surfaces are drawn. The depth target must be readable.
+        void recordPostEffects(RenderWorker *worker, uint32_t sceneIndex);
+
+        // Copies the color target of a scene (resolved if multisampled) into a texture in the shader read layout and
+        // returns it. The color target is left in the color write layout.
+        const RenderTexture *copyColor(RenderWorker *worker, uint32_t sceneIndex);
 
         bool empty() const;
 

@@ -6,10 +6,13 @@
 
 #include <algorithm>
 #include <atomic>
+#include <chrono>
 #include <cmath>
 #include <cstdlib>
 
 #include "shaders/FullScreenVS.hlsl.spirv.h"
+#include "shaders/LightingCopyPS.hlsl.spirv.h"
+#include "shaders/LightingCopyPSMS.hlsl.spirv.h"
 #include "shaders/LightingComposePS.hlsl.spirv.h"
 #include "shaders/LightingComposePSMS.hlsl.spirv.h"
 #include "shaders/LightingGBufferVS.hlsl.spirv.h"
@@ -21,6 +24,8 @@
 #include "shaders/LightingShadowVS.hlsl.spirv.h"
 #ifdef _WIN32
 #   include "shaders/FullScreenVS.hlsl.dxil.h"
+#   include "shaders/LightingCopyPS.hlsl.dxil.h"
+#   include "shaders/LightingCopyPSMS.hlsl.dxil.h"
 #   include "shaders/LightingComposePS.hlsl.dxil.h"
 #   include "shaders/LightingComposePSMS.hlsl.dxil.h"
 #   include "shaders/LightingGBufferVS.hlsl.dxil.h"
@@ -32,6 +37,8 @@
 #   include "shaders/LightingShadowVS.hlsl.dxil.h"
 #elif defined(__APPLE__)
 #   include "shaders/FullScreenVS.hlsl.metal.h"
+#   include "shaders/LightingCopyPS.hlsl.metal.h"
+#   include "shaders/LightingCopyPSMS.hlsl.metal.h"
 #   include "shaders/LightingComposePS.hlsl.metal.h"
 #   include "shaders/LightingComposePSMS.hlsl.metal.h"
 #   include "shaders/LightingGBufferVS.hlsl.metal.h"
@@ -278,6 +285,118 @@ namespace RT64 {
             composePixelShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingComposePS, "PSMain", shaderFormat));
             composePixelShaderMS = device->createShader(LIGHTING_SHADER_INPUTS(LightingComposePSMS, "PSMain", shaderFormat));
         }
+
+        // Copy of the color target for the passes that read it.
+        {
+            LightingCopyDescriptorSet descriptorSet;
+            RenderPipelineLayoutBuilder layoutBuilder;
+            layoutBuilder.begin();
+            layoutBuilder.addDescriptorSet(descriptorSet);
+            layoutBuilder.end();
+            copyPipelineLayout = layoutBuilder.create(device);
+            copyPixelShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingCopyPS, "PSMain", shaderFormat));
+            copyPixelShaderMS = device->createShader(LIGHTING_SHADER_INPUTS(LightingCopyPSMS, "PSMain", shaderFormat));
+        }
+
+        sky = std::make_unique<LightingSky>(device, shaderLibrary, shaderFormat);
+        postEffects = std::make_unique<PostEffects>(device, shaderLibrary, shaderFormat);
+    }
+
+    static float lightingTime() {
+        static const auto startTime = std::chrono::steady_clock::now();
+        return std::chrono::duration<float>(std::chrono::steady_clock::now() - startTime).count();
+    }
+
+    const RenderTexture *LightingRenderer::copyColor(RenderWorker *worker, uint32_t sceneIndex) {
+        assert(sceneIndex < scenes.size());
+        const Scene &scene = scenes[sceneIndex];
+        RenderTarget *colorTarget = scene.colorTarget;
+        const bool multisampling = (colorTarget->multisampling.sampleCount > 1);
+        if ((colorCopyTexture == nullptr) || (colorCopyWidth < colorTarget->width) || (colorCopyHeight < colorTarget->height) || (colorCopyFormat != colorTarget->format)) {
+            colorCopyFramebuffer.reset();
+            colorCopyTexture.reset();
+            colorCopyWidth = std::max(colorCopyWidth, colorTarget->width);
+            colorCopyHeight = std::max(colorCopyHeight, colorTarget->height);
+            colorCopyFormat = colorTarget->format;
+            colorCopyTexture = device->createTexture(RenderTextureDesc::ColorTarget(colorCopyWidth, colorCopyHeight, colorCopyFormat));
+            colorCopyTexture->setName("Lighting Color Copy");
+            const RenderTexture *colorAttachment = colorCopyTexture.get();
+            colorCopyFramebuffer = device->createFramebuffer(RenderFramebufferDesc(&colorAttachment, 1));
+        }
+
+        std::unique_ptr<RenderPipeline> &pipeline = copyPipelines[{ multisampling ? 1U : 0U, colorTarget->format }];
+        if (pipeline == nullptr) {
+            RenderGraphicsPipelineDesc pipelineDesc;
+            pipelineDesc.pipelineLayout = copyPipelineLayout.get();
+            pipelineDesc.vertexShader = fullScreenVertexShader.get();
+            pipelineDesc.pixelShader = multisampling ? copyPixelShaderMS.get() : copyPixelShader.get();
+            pipelineDesc.renderTargetFormat[0] = colorTarget->format;
+            pipelineDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
+            pipelineDesc.renderTargetCount = 1;
+            pipelineDesc.primitiveTopology = RenderPrimitiveTopology::TRIANGLE_LIST;
+            pipelineDesc.cullMode = RenderCullMode::NONE;
+            pipeline = device->createGraphicsPipeline(pipelineDesc);
+        }
+
+        while (copySets.size() <= sceneIndex) {
+            copySets.emplace_back(std::make_unique<LightingCopyDescriptorSet>(device));
+        }
+
+        LightingCopyDescriptorSet *copySet = copySets[sceneIndex].get();
+        copySet->setTexture(copySet->gInput, colorTarget->texture.get(), RenderTextureLayout::SHADER_READ, colorTarget->textureView.get());
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, {
+            RenderTextureBarrier(colorTarget->texture.get(), RenderTextureLayout::SHADER_READ),
+            RenderTextureBarrier(colorCopyTexture.get(), RenderTextureLayout::COLOR_WRITE)
+        });
+
+        worker->commandList->setFramebuffer(colorCopyFramebuffer.get());
+        worker->commandList->setViewports(RenderViewport(0.0f, 0.0f, float(colorCopyWidth), float(colorCopyHeight)));
+        worker->commandList->setScissors(scene.rect);
+        worker->commandList->setPipeline(pipeline.get());
+        worker->commandList->setGraphicsPipelineLayout(copyPipelineLayout.get());
+        worker->commandList->setGraphicsDescriptorSet(copySet->get(), 0);
+        worker->commandList->setVertexBuffers(0, nullptr, 0, nullptr);
+        worker->commandList->drawInstanced(3, 1, 0, 0);
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, {
+            RenderTextureBarrier(colorCopyTexture.get(), RenderTextureLayout::SHADER_READ),
+            RenderTextureBarrier(colorTarget->texture.get(), RenderTextureLayout::COLOR_WRITE)
+        });
+
+        return colorCopyTexture.get();
+    }
+
+    void LightingRenderer::recordSky(RenderWorker *worker, uint32_t sceneIndex) {
+        assert(sceneIndex < scenes.size());
+        const Scene &scene = scenes[sceneIndex];
+        if (!scene.hasSun || scene.rect.isEmpty() || !sky->enabled()) {
+            return;
+        }
+
+        LightingSkyDesc skyDesc;
+        skyDesc.colorTarget = scene.colorTarget;
+        skyDesc.depthTarget = scene.depthTarget;
+        skyDesc.rect = scene.rect;
+        skyDesc.lighting = &scene.params;
+        skyDesc.sceneColor = copyColor(worker, sceneIndex);
+        skyDesc.time = lightingTime();
+        sky->record(worker, skyDesc);
+    }
+
+    void LightingRenderer::recordPostEffects(RenderWorker *worker, uint32_t sceneIndex) {
+        assert(sceneIndex < scenes.size());
+        const Scene &scene = scenes[sceneIndex];
+        if (scene.rect.isEmpty() || !postEffects->enabled()) {
+            return;
+        }
+
+        PostEffectsSceneDesc postDesc;
+        postDesc.colorTarget = scene.colorTarget;
+        postDesc.depthTarget = scene.depthTarget;
+        postDesc.rect = scene.rect;
+        postDesc.lighting = &scene.params;
+        postDesc.sceneColor = copyColor(worker, sceneIndex);
+        postDesc.time = lightingTime();
+        postEffects->record(worker, postDesc);
     }
 
     LightingRenderer::~LightingRenderer() { }
