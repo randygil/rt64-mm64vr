@@ -43,6 +43,7 @@ namespace RT64 {
         uint32_t gShadowSampler;
         uint32_t gNormalBuffer;
         uint32_t gAmbientOcclusion;
+        uint32_t gSkyAnalysis;
 
         LightingComposeDescriptorSet(const RenderSampler *shadowSampler, RenderDevice *device = nullptr) {
             builder.begin();
@@ -52,6 +53,7 @@ namespace RT64 {
             gShadowSampler = builder.addImmutableSampler(4, shadowSampler);
             gNormalBuffer = builder.addTexture(5);
             gAmbientOcclusion = builder.addTexture(6);
+            gSkyAnalysis = builder.addStructuredBuffer(7);
             builder.end();
 
             if (device != nullptr) {

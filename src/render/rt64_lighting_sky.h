@@ -54,5 +54,9 @@ namespace RT64 {
 
         // Replaces the sky of the region. Can change the bound framebuffer, pipeline and descriptor sets.
         void record(RenderWorker *worker, const LightingSkyDesc &desc);
+
+        // Analysis of the game's sky of each scene index (float4: average color, how much it can be replaced), kept
+        // across frames. The lighting reads it to take the tint of skies that aren't daytime skies.
+        const RenderBuffer *getAnalysisBuffer() const;
     };
 };

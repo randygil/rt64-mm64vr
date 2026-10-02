@@ -23,6 +23,25 @@ Texture2D<float> gShadowMap : register(t3, space0);
 SamplerComparisonState gShadowSampler : register(s4, space0);
 Texture2D<float4> gNormalBuffer : register(t5, space0);
 Texture2D<float4> gAmbientOcclusion : register(t6, space0);
+StructuredBuffer<float4> gSkyAnalysis : register(t7, space0);
+
+// Tint of the light from the game's sky when it isn't a daytime sky (a sunset, a purple sky), from the average color the
+// procedural sky measured on the previous frames.
+float3 skyLightTint(LightingParams params) {
+    if ((params.settings.w & LIGHTING_SCENE_FLAG_SKY_TINT) == 0) {
+        return float3(1.0f, 1.0f, 1.0f);
+    }
+
+    const float3 skyColor = gSkyAnalysis[gConstants.sceneIndex % 8].rgb;
+    const float luma = dot(skyColor, float3(0.299f, 0.587f, 0.114f));
+    if (!(luma > 0.05f)) {
+        return float3(1.0f, 1.0f, 1.0f);
+    }
+
+    const float daytime = smoothstep(0.02f, 0.10f, skyColor.b - skyColor.r) * smoothstep(-0.02f, 0.04f, skyColor.g - skyColor.r);
+    const float3 chroma = saturate(skyColor / luma * 0.8f + 0.2f);
+    return lerp(float3(1.0f, 1.0f, 1.0f), chroma, params.lightingTint.x * (1.0f - daytime));
+}
 
 float loadDepth(int2 pixel) {
 #ifdef MULTISAMPLING
@@ -220,7 +239,8 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
     const float occlusion = lerp(1.0f, ambientOcclusion, params.aoParams.y * (foliage ? params.aoParams2.y : 1.0f));
     const float contact = (params.contactParams.w > 0.0f) ? lerp(1.0f, occlusionSample.y, params.contactParams.z) : 1.0f;
     const float upFactor = dot(normal, worldUp) * 0.5f + 0.5f;
-    const float3 ambientLight = lerp(params.groundColor.rgb, params.ambientColor.rgb, upFactor) * occlusion;
+    const float3 lightTint = skyLightTint(params);
+    const float3 ambientLight = lerp(params.groundColor.rgb, params.ambientColor.rgb * lightTint, upFactor) * occlusion;
 
     // The sun.
     float3 sunLight = float3(0.0f, 0.0f, 0.0f);
@@ -239,7 +259,7 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
         // Surfaces facing away from the sun are already in shadow, so the shading from the normals is limited by the
         // strength set for it to keep the game's own shading readable.
         const float shading = lerp(1.0f, diffuse, params.lightingParams.w);
-        sunLight = params.sunColor.rgb * (shading * shadow);
+        sunLight = params.sunColor.rgb * lightTint * (shading * shadow);
 
         // Leaves glow when the sun is behind them.
         if (foliage) {

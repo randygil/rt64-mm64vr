@@ -400,6 +400,9 @@ namespace RT64 {
         std::unique_ptr<RenderBuffer> analysisBuffer;
         std::vector<std::unique_ptr<LightingSkyAnalysisDescriptorSet>> analysisSets;
         bool analysisValid[SkyAnalysisCount] = {};
+
+        // The analysis buffer starts with undefined contents: it's cleared by the first sky drawn.
+        bool analysisCleared = false;
         interop::LightingSkyLutCB lutConstants = {};
         bool lutRendered = false;
         uint32_t nextSlot = 0;
@@ -530,10 +533,15 @@ namespace RT64 {
             impl->analysisPipelineMS = device->createComputePipeline(RenderComputePipelineDesc(impl->analysisPipelineLayout.get(), analysisShaderMS.get(), 64, 1, 1));
             impl->analysisBuffer = device->createBuffer(RenderBufferDesc::DefaultBuffer(sizeof(interop::float4) * SkyAnalysisCount, RenderBufferFlag::STORAGE | RenderBufferFlag::UNORDERED_ACCESS));
             impl->analysisBuffer->setName("Lighting Sky Analysis");
+            impl->analysisCleared = false;
         }
     }
 
     LightingSky::~LightingSky() { }
+
+    const RenderBuffer *LightingSky::getAnalysisBuffer() const {
+        return impl->analysisBuffer.get();
+    }
 
     bool LightingSky::enabled() const {
         // The host's sky option is shared with the path tracer's procedural sky.
@@ -683,15 +691,29 @@ namespace RT64 {
 
             interop::LightingSkyAnalysisCB analysisCB;
             analysisCB.slot = slot;
-            analysisCB.sceneIndex = sceneIndex;
-            analysisCB.reset = impl->analysisValid[sceneIndex] ? 0U : 1U;
             analysisCB.padding = 0;
-            impl->analysisValid[sceneIndex] = true;
             worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(impl->analysisBuffer.get(), RenderBufferAccess::WRITE));
             worker->commandList->setPipeline((colorTarget->multisampling.sampleCount > 1) ? impl->analysisPipelineMS.get() : impl->analysisPipeline.get());
             worker->commandList->setComputePipelineLayout(impl->analysisPipelineLayout.get());
-            worker->commandList->setComputePushConstants(0, &analysisCB);
             worker->commandList->setComputeDescriptorSet(analysisSet->get(), 0);
+
+            // The first time, every entry gets a valid value, as the lighting reads them all.
+            if (!impl->analysisCleared) {
+                for (uint32_t i = 0; i < SkyAnalysisCount; i++) {
+                    analysisCB.sceneIndex = i;
+                    analysisCB.reset = 1;
+                    worker->commandList->setComputePushConstants(0, &analysisCB);
+                    worker->commandList->dispatch(1, 1, 1);
+                }
+
+                worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(impl->analysisBuffer.get(), RenderBufferAccess::WRITE));
+                impl->analysisCleared = true;
+            }
+
+            analysisCB.sceneIndex = sceneIndex;
+            analysisCB.reset = impl->analysisValid[sceneIndex] ? 0U : 1U;
+            impl->analysisValid[sceneIndex] = true;
+            worker->commandList->setComputePushConstants(0, &analysisCB);
             worker->commandList->dispatch(1, 1, 1);
         }
 

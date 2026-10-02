@@ -612,6 +612,14 @@ namespace RT64 {
         params.settings.z = (depthTarget != nullptr) ? depthTarget->multisampling.sampleCount : 1;
         params.settings.w = desc.skyHidden ? LIGHTING_SCENE_FLAG_SKY_HIDDEN : 0U;
 
+        // Skies that aren't daytime skies tint the light, from the analysis of the procedural sky (which needs it on).
+        const float skyTint = enhancementValue("RT64_LIGHT_SKY_TINT", 0.8f);
+        if (!desc.skyHidden && (skyTint > 0.0f) && sky->enabled()) {
+            params.settings.w |= LIGHTING_SCENE_FLAG_SKY_TINT;
+        }
+
+        params.lightingTint = hlslpp::float4(skyTint, 0.0f, 0.0f, 0.0f);
+
         const uint32_t sceneIndex = uint32_t(scenes.size());
         scenes.emplace_back(scene);
         return sceneIndex;
@@ -860,6 +868,7 @@ namespace RT64 {
             set->setTexture(set->gShadowMap, shadowMap.get(), RenderTextureLayout::DEPTH_READ, shadowMapView.get());
             set->setTexture(set->gNormalBuffer, normalBuffer.get(), RenderTextureLayout::SHADER_READ);
             set->setTexture(set->gAmbientOcclusion, aoTextures[0].get(), RenderTextureLayout::SHADER_READ);
+            set->setBuffer(set->gSkyAnalysis, sky->getAnalysisBuffer(), RenderBufferStructuredView(sizeof(interop::float4)));
         }
 
         if (mergedDraws && (triangleDrawSet != nullptr) && (triangleDrawsBuffer.get() != nullptr)) {
