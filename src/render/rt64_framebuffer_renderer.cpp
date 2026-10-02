@@ -956,8 +956,8 @@ namespace RT64 {
         rtParams.cloudHeight = enhancementValue("RT64_RT_CLOUD_HEIGHT", 30000.0f);
         rtParams.cloudShadows = enhancementValue("RT64_RT_CLOUD_SHADOWS", 0.5f) * intensity;
         rtParams.spriteVolume = enhancementValue("RT64_RT_SPRITE_VOLUME", 0.9f) * intensity;
-        rtParams.foliageWind = enhancementValue("RT64_RT_FOLIAGE_WIND", 0.8f) * intensity;
-        rtParams.foliageDetail = enhancementValue("RT64_RT_FOLIAGE_DETAIL", 1.0f) * intensity;
+        rtParams.foliageWind = enhancementValue("RT64_RT_FOLIAGE_WIND", 0.0f) * intensity;
+        rtParams.foliageDetail = enhancementValue("RT64_RT_FOLIAGE_DETAIL", 0.0f) * intensity;
         rtParams.textureSmoothing = (intensity > 0.0f) ? enhancementValue("RT64_RT_TEXTURE_SMOOTHING", 1.0f) : 0.0f;
         rtParams.skyTint = hlslpp::float4(enhancementValue("RT64_RT_SKY_TINT_R", 0.8f), enhancementValue("RT64_RT_SKY_TINT_G", 0.9f), enhancementValue("RT64_RT_SKY_TINT_B", 1.15f), 0.0f);
 
@@ -1898,6 +1898,8 @@ namespace RT64 {
         int32_t lightingSceneIndex = -1;
         interop::float4x4 lightingViewProj;
         const float lightingSmoothNormalAngle = lightingActive ? enhancementValue("RT64_LIGHT_SMOOTH_NORMALS", 75.0f) : 0.0f;
+        static const uint32_t SmoothNormalTriangles[] = { 0, 256, 1024, 1024 };
+        const uint32_t lightingSmoothNormalTriangles = uint32_t(enhancementValue("RT64_LIGHT_SMOOTH_NORMALS_MAX", float(SmoothNormalTriangles[getRasterLightingQuality()])));
         thread_local std::vector<uint32_t> lightingDeferred;
         thread_local std::vector<interop::float4x4> lightingLitViewProjs;
         lightingDeferred.clear();
@@ -2282,10 +2284,10 @@ namespace RT64 {
                                 // Geometry without lighting has no normals: smooth ones are computed from its faces. Large
                                 // draw calls are skipped as the cost grows with the square of the triangle count, and
                                 // consecutive ranges are merged to weld the models drawn in several calls.
-                                if ((lightingSmoothNormalAngle > 0.0f) && !rspLit && !alphaTested && (call.callDesc.triangleCount <= 1024)) {
+                                if ((lightingSmoothNormalAngle > 0.0f) && !rspLit && !alphaTested && (call.callDesc.triangleCount <= lightingSmoothNormalTriangles)) {
                                     const uint32_t indexStart = call.meshDesc.faceIndicesStart;
                                     const uint32_t indexCount = call.callDesc.triangleCount * 3;
-                                    if (!rspSmoothNormalVector.empty() && ((rspSmoothNormalVector.back().indexStart + rspSmoothNormalVector.back().indexCount) == indexStart) && ((rspSmoothNormalVector.back().indexCount + indexCount) <= (1024 * 3))) {
+                                    if (!rspSmoothNormalVector.empty() && ((rspSmoothNormalVector.back().indexStart + rspSmoothNormalVector.back().indexCount) == indexStart) && ((rspSmoothNormalVector.back().indexCount + indexCount) <= (lightingSmoothNormalTriangles * 3))) {
                                         rspSmoothNormalVector.back().indexCount += indexCount;
                                     }
                                     else {

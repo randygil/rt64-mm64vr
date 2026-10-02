@@ -71,19 +71,36 @@ float sampleShadow(LightingParams params, float3 position, float3 normal, float 
         return 1.0f;
     }
 
-    // 3x3 bilinear comparisons spread by the softness.
+    // Grid of bilinear comparisons spread by the softness: a single one on low quality, 3x3 normally and 5x5 on ultra.
     const float referenceDepth = shadowNdc.z - params.shadowParams.y;
     const float2 spread = params.shadowMapParams.xy * params.shadowParams.w;
+    const uint quality = params.settings.y;
     float lit = 0.0f;
-    [unroll]
-    for (int y = -1; y <= 1; y++) {
-        [unroll]
-        for (int x = -1; x <= 1; x++) {
-            lit += gShadowMap.SampleCmpLevelZero(gShadowSampler, shadowUV + float2(x, y) * spread, referenceDepth);
-        }
+    if (quality == 0) {
+        lit = gShadowMap.SampleCmpLevelZero(gShadowSampler, shadowUV, referenceDepth);
     }
+    else if (quality >= 3) {
+        [unroll]
+        for (int y = -2; y <= 2; y++) {
+            [unroll]
+            for (int x = -2; x <= 2; x++) {
+                lit += gShadowMap.SampleCmpLevelZero(gShadowSampler, shadowUV + float2(x, y) * spread * 0.75f, referenceDepth);
+            }
+        }
 
-    lit /= 9.0f;
+        lit /= 25.0f;
+    }
+    else {
+        [unroll]
+        for (int y = -1; y <= 1; y++) {
+            [unroll]
+            for (int x = -1; x <= 1; x++) {
+                lit += gShadowMap.SampleCmpLevelZero(gShadowSampler, shadowUV + float2(x, y) * spread, referenceDepth);
+            }
+        }
+
+        lit /= 9.0f;
+    }
 
     // Fade out the shadows close to the edges of the shadow map.
     const float2 edgeDistance = min(shadowUV, 1.0f - shadowUV);

@@ -107,7 +107,9 @@ namespace RT64 {
     }
 
     int getRasterLightingQuality() {
-        return rasterLightingQuality;
+        // RT64_LIGHT_QUALITY overrides the host's setting to compare the presets.
+        const int overrideQuality = int(enhancementValue("RT64_LIGHT_QUALITY", -1.0f));
+        return (overrideQuality >= 0) ? std::min(overrideQuality, 3) : int(rasterLightingQuality);
     }
 
     static float dot3(const hlslpp::float3 &a, const hlslpp::float3 &b) {
