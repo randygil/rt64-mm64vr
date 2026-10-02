@@ -31,6 +31,9 @@ StructuredBuffer<float4> gSkyAnalysis : register(t7, space0);
 Texture2D<float4> gSceneColor : register(t8, space0);
 Texture2D<float4> gEmissiveLight : register(t9, space0);
 
+// Shadows of the light carried in scenes without a sun: the six faces of a cube around it in a 3x2 atlas.
+Texture2D<float> gPointShadowMap : register(t10, space0);
+
 // Tint of the light from the game's sky when it isn't a daytime sky (a sunset, a purple sky), from the average color the
 // procedural sky measured on the previous frames.
 float3 skyLightTint(LightingParams params) {
@@ -99,6 +102,68 @@ float3 sampleEmissiveLight(LightingParams params, float2 pixelPosition) {
     const float3 c01 = gEmissiveLight.Load(int3(clamp(basePixel + int2(0, 1), int2(0, 0), maxPixel), 0)).rgb;
     const float3 c11 = gEmissiveLight.Load(int3(clamp(basePixel + int2(1, 1), int2(0, 0), maxPixel), 0)).rgb;
     return lerp(lerp(c00, c10, fraction.x), lerp(c01, c11, fraction.x), fraction.y);
+}
+
+// Axes of a face of the point light's cube (the ones computePointShadowFace uses on the CPU) for a direction from the
+// light: the face is the one of its largest component.
+uint lightingPointShadowFace(float3 direction, out float3 forward, out float3 up) {
+    const float3 magnitude = abs(direction);
+    if ((magnitude.x >= magnitude.y) && (magnitude.x >= magnitude.z)) {
+        forward = float3((direction.x >= 0.0f) ? 1.0f : -1.0f, 0.0f, 0.0f);
+        up = float3(0.0f, 1.0f, 0.0f);
+        return (direction.x >= 0.0f) ? 0 : 1;
+    }
+    else if (magnitude.y >= magnitude.z) {
+        forward = float3(0.0f, (direction.y >= 0.0f) ? 1.0f : -1.0f, 0.0f);
+        up = float3(0.0f, 0.0f, (direction.y >= 0.0f) ? -1.0f : 1.0f);
+        return (direction.y >= 0.0f) ? 2 : 3;
+    }
+    else {
+        forward = float3(0.0f, 0.0f, (direction.z >= 0.0f) ? 1.0f : -1.0f);
+        up = float3(0.0f, 1.0f, 0.0f);
+        return (direction.z >= 0.0f) ? 4 : 5;
+    }
+}
+
+// Shadow of the light carried in scenes without a sun (1 is lit), with a 3x3 grid of comparisons that stays inside the
+// face of the atlas.
+float samplePointShadow(LightingParams params, float3 position, float3 normal) {
+    const float faceSize = params.pointShadowParams.z;
+    const float zNear = params.pointShadowPosition.w;
+    float3 direction = position - params.pointShadowPosition.xyz;
+
+    // A texel of a 90 degree face covers 2 * distance / size world units.
+    const float texelSize = 2.0f * max(length(direction), zNear) / faceSize;
+    direction += normal * (texelSize * params.pointShadowParams2.x);
+
+    float3 forward, up;
+    const uint face = lightingPointShadowFace(direction, forward, up);
+    const float3 right = cross(up, forward);
+    const float z = dot(direction, forward);
+    if (z <= zNear) {
+        return 1.0f;
+    }
+
+    const float2 faceUV = (float2(dot(direction, right), dot(direction, up)) / z) * float2(0.5f, -0.5f) + 0.5f;
+    const float biasedZ = max(z - texelSize * params.pointShadowParams2.y, zNear);
+    const float referenceDepth = params.pointShadowParams.x + params.pointShadowParams.y / biasedZ;
+    const float2 tile = float2(float(face % 3), float(face / 3));
+    const float2 atlasTexel = 1.0f / (float2(3.0f, 2.0f) * faceSize);
+    const float2 minUV = (tile * faceSize + 1.0f) * atlasTexel;
+    const float2 maxUV = ((tile + 1.0f) * faceSize - 1.0f) * atlasTexel;
+    const float2 centerUV = (tile + faceUV) * faceSize * atlasTexel;
+    const float2 spread = atlasTexel * params.pointShadowParams2.z;
+    float lit = 0.0f;
+    [unroll]
+    for (int y = -1; y <= 1; y++) {
+        [unroll]
+        for (int x = -1; x <= 1; x++) {
+            const float2 sampleUV = clamp(centerUV + float2(x, y) * spread, minUV, maxUV);
+            lit += gPointShadowMap.SampleCmpLevelZero(gShadowSampler, sampleUV, referenceDepth);
+        }
+    }
+
+    return lerp(1.0f, lit / 9.0f, params.pointShadowParams.w);
 }
 
 float loadDepth(int2 pixel) {
@@ -346,13 +411,18 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
 
     // Light carried with the camera.
     float3 pointLight = float3(0.0f, 0.0f, 0.0f);
+    float pointShadow = 1.0f;
     if (params.pointLightPosition.w > 0.0f) {
         const float3 toLight = params.pointLightPosition.xyz - position;
         const float distance = length(toLight);
         const float3 lightDirection = toLight / max(distance, 1e-4f);
         const float attenuation = pow(saturate(1.0f - distance / params.pointLightPosition.w), max(params.pointLightColor.w, 0.5f));
         const float diffuse = saturate(dot(normal, lightDirection) * 0.75f + 0.25f);
-        pointLight = params.pointLightColor.rgb * (diffuse * attenuation * ((params.sunDirection.w > 0.0f) ? 1.0f : contact));
+        if ((params.pointShadowParams.w > 0.0f) && (attenuation > 0.0f)) {
+            pointShadow = samplePointShadow(params, position, normal);
+        }
+
+        pointLight = params.pointLightColor.rgb * (diffuse * attenuation * pointShadow * ((params.sunDirection.w > 0.0f) ? 1.0f : contact));
     }
 
     // Glowing surfaces of scenes without a sun (lamps, screens, crystals) light their surroundings with their color and
@@ -396,6 +466,14 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
     }
     else if (debugView == 8) {
         return float4(contact.xxx, 1.0f);
+    }
+    else if (debugView == 10) {
+        return float4(pointShadow.xxx, 1.0f);
+    }
+    else if (debugView == 11) {
+        // The point light's atlas itself (one texel per pixel from the top left corner), darker where closer to it.
+        const float storedDepth = gPointShadowMap.Load(int3(pixel, 0));
+        return float4(saturate((1.0f - storedDepth) * 4.0f).xxx, 1.0f);
     }
     else if (debugView == 9) {
         // Light of the glowing surfaces, and red where a surface glows itself.

@@ -187,6 +187,25 @@ namespace RT64 {
         return texelSize;
     }
 
+    // World space to the clip space of one face of a cube around a point light (90 degree field of view, depth = a + b / z
+    // where z is the distance along the face's axis), as a row vector matrix. The faces and their axes are the ones of
+    // lightingPointShadowFace in LightingComposePS.hlsl.
+    static void computePointShadowFace(uint32_t face, const hlslpp::float3 &lightPosition, float zNear, float zFar, interop::float4x4 &matrix) {
+        static const float Forward[6][3] = { { 1.0f, 0.0f, 0.0f }, { -1.0f, 0.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, -1.0f, 0.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 0.0f, -1.0f } };
+        static const float Up[6][3] = { { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 0.0f, -1.0f }, { 0.0f, 0.0f, 1.0f }, { 0.0f, 1.0f, 0.0f }, { 0.0f, 1.0f, 0.0f } };
+        const hlslpp::float3 forward(Forward[face][0], Forward[face][1], Forward[face][2]);
+        const hlslpp::float3 up(Up[face][0], Up[face][1], Up[face][2]);
+        const hlslpp::float3 right = hlslpp::cross(up, forward);
+        const float a = zFar / (zFar - zNear);
+        const float b = -zFar * zNear / (zFar - zNear);
+        hlslpp::float4x4 faceMatrix(
+            float(right.x), float(up.x), a * float(forward.x), float(forward.x),
+            float(right.y), float(up.y), a * float(forward.y), float(forward.y),
+            float(right.z), float(up.z), a * float(forward.z), float(forward.z),
+            -dot3(lightPosition, right), -dot3(lightPosition, up), -a * dot3(lightPosition, forward) + b, -dot3(lightPosition, forward));
+        matrix = faceMatrix;
+    }
+
     // LightingRenderer
 
     LightingRenderer::LightingRenderer(RenderDevice *device, const ShaderLibrary *shaderLibrary, RenderShaderFormat shaderFormat) {
@@ -259,6 +278,15 @@ namespace RT64 {
             pipelineDesc.pixelShader = pixelShader.get();
             shadowAlphaPipeline = device->createGraphicsPipeline(pipelineDesc);
 
+            // The faces of the point light's cube clip what's closer than their near plane instead (the player around the
+            // origin of the shadows must not cover them).
+            pipelineDesc.depthClipEnabled = true;
+            pipelineDesc.pixelShader = nullptr;
+            shadowOpaquePointPipeline = device->createGraphicsPipeline(pipelineDesc);
+            pipelineDesc.pixelShader = pixelShader.get();
+            shadowAlphaPointPipeline = device->createGraphicsPipeline(pipelineDesc);
+            pipelineDesc.depthClipEnabled = false;
+
             // The normal buffer is drawn with the same inputs as the raster shaders.
             layoutBuilder.begin(false, true);
             layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingGBufferCB), RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL);
@@ -328,6 +356,9 @@ namespace RT64 {
                 pipelineDesc.pipelineLayout = shadowMergedPipelineLayout.get();
                 pipelineDesc.pixelShader = shadowMergedPixelShader.get();
                 shadowMergedPipeline = device->createGraphicsPipeline(pipelineDesc);
+                pipelineDesc.depthClipEnabled = true;
+                shadowMergedPointPipeline = device->createGraphicsPipeline(pipelineDesc);
+                pipelineDesc.depthClipEnabled = false;
 
                 layoutBuilder.begin(false, true);
                 layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingGBufferCB), RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL);
@@ -544,6 +575,8 @@ namespace RT64 {
         paramsVector.clear();
         shadowMapActive = false;
         shadowMapRendered = false;
+        pointShadowActive = false;
+        pointShadowRendered = false;
         copySetCursor = 0;
     }
 
@@ -597,6 +630,7 @@ namespace RT64 {
         }
 
         scene.worldOrigin = (float(desc.worldOrigin.w) > 0.0f) ? desc.worldOrigin.xyz : hlslpp::float3(0.0f, 0.0f, 0.0f);
+        scene.focusPosition = desc.focusPosition;
         params.worldRight = hlslpp::float4(scene.worldRight, 0.0f);
         params.worldUp = hlslpp::float4(scene.worldUp, 0.0f);
         params.worldForward = hlslpp::float4(scene.worldForward, 0.0f);
@@ -621,7 +655,10 @@ namespace RT64 {
                 // A pool of warm light around the player that fades out faster than the path tracer's, so the rooms get
                 // darker away from it instead of being brightened evenly.
                 const float pointStrength = enhancementValue("RT64_LIGHT_POINT", 0.9f);
-                params.pointLightPosition = hlslpp::float4(position, light.attenuationRadius * enhancementValue("RT64_LIGHT_POINT_RADIUS", 0.75f));
+                // Development: the light can be moved along the world's axes to look at its shadows from a camera it sits on.
+                const hlslpp::float3 debugOffset = scene.worldRight * enhancementValue("RT64_LIGHT_POINT_OFFSET_X", 0.0f) +
+                    scene.worldUp * enhancementValue("RT64_LIGHT_POINT_OFFSET_Y", 0.0f) + scene.worldForward * enhancementValue("RT64_LIGHT_POINT_OFFSET_Z", 0.0f);
+                params.pointLightPosition = hlslpp::float4(position + debugOffset, light.attenuationRadius * enhancementValue("RT64_LIGHT_POINT_RADIUS", 0.75f));
                 params.pointLightColor = hlslpp::float4(light.diffuseColor.x * pointStrength, light.diffuseColor.y * pointStrength, light.diffuseColor.z * pointStrength,
                     enhancementValue("RT64_LIGHT_POINT_FALLOFF", 2.0f));
             }
@@ -770,6 +807,18 @@ namespace RT64 {
         shadowMapNeedsTransition = true;
     }
 
+    void LightingRenderer::createPointShadowMap(uint32_t faceSize) {
+        pointShadowFramebuffer.reset();
+        pointShadowMapView.reset();
+        pointShadowMap.reset();
+        pointShadowMap = device->createTexture(RenderTextureDesc::DepthTarget(faceSize * 3, faceSize * 2, RenderFormat::D32_FLOAT));
+        pointShadowMap->setName("Lighting Point Shadow Map");
+        pointShadowMapView = pointShadowMap->createTextureView(RenderTextureViewDesc::Texture2D(RenderFormat::D32_FLOAT));
+        pointShadowFramebuffer = device->createFramebuffer(RenderFramebufferDesc(nullptr, 0, pointShadowMap.get()));
+        pointShadowFaceSize = faceSize;
+        pointShadowNeedsTransition = true;
+    }
+
     void LightingRenderer::finish(RenderWorker *worker, const std::vector<InstanceDrawCall> &instanceDrawCalls, std::vector<BufferUploader::Upload> &uploads) {
         if (scenes.empty()) {
             return;
@@ -789,7 +838,35 @@ namespace RT64 {
             }
         }
 
-        casters.erase(std::remove_if(casters.begin(), casters.end(), [&](const Caster &caster) { return caster.sceneIndex != sunSceneIndex; }), casters.end());
+        // Without a sun, the light carried in the biggest scene casts shadows in all directions instead. They're drawn from
+        // around the chest of the player instead of from the light itself, which floats high above them and can end up
+        // above a low ceiling that would shadow the whole room; without the player's position there are none (the light
+        // would be placed from the camera alone). Development: RT64_LIGHT_POINT_SHADOW_ORIGIN 1 draws them from the light.
+        uint32_t pointSceneIndex = UINT32_MAX;
+        hlslpp::float3 pointShadowOrigin(0.0f, 0.0f, 0.0f);
+        if (sunSceneIndex == UINT32_MAX) {
+            const bool fromLight = (enhancementValue("RT64_LIGHT_POINT_SHADOW_ORIGIN", 0.0f) > 0.0f);
+            const float originHeight = enhancementValue("RT64_LIGHT_POINT_SHADOW_HEIGHT", 110.0f);
+            int64_t pointSceneArea = -1;
+            for (uint32_t i = 0; i < uint32_t(scenes.size()); i++) {
+                const Scene &scene = scenes[i];
+                const RenderRect &rect = scene.rect;
+                const int64_t area = rect.isEmpty() ? 0 : (int64_t(rect.right - rect.left) * int64_t(rect.bottom - rect.top));
+                const interop::float4 &light = scene.params.pointLightPosition;
+                const float maxFocusDistance = enhancementValue("RT64_RT_INDOOR_FOCUS_MAX_DISTANCE", 2500.0f);
+                const bool focusKnown = (float(scene.focusPosition.w) > 0.0f) && (length3(scene.focusPosition.xyz - scene.cameraPosition) < maxFocusDistance);
+                if ((float(light.w) <= 0.0f) || !(focusKnown || fromLight) || (area <= pointSceneArea)) {
+                    continue;
+                }
+
+                pointSceneIndex = i;
+                pointSceneArea = area;
+                pointShadowOrigin = fromLight ? hlslpp::float3(light.x, light.y, light.z) : (scene.focusPosition.xyz + scene.worldUp * originHeight);
+            }
+        }
+
+        const uint32_t casterSceneIndex = (sunSceneIndex != UINT32_MAX) ? sunSceneIndex : pointSceneIndex;
+        casters.erase(std::remove_if(casters.begin(), casters.end(), [&](const Caster &caster) { return caster.sceneIndex != casterSceneIndex; }), casters.end());
 
         // Parameters of each triangle of the draw calls drawn again by the shadow and normal passes.
         if (mergedDraws) {
@@ -840,6 +917,28 @@ namespace RT64 {
         const uint32_t mapSize = std::clamp(desiredSize, 256U, 8192U);
         if ((shadowMap == nullptr) || (shadowMapSize != mapSize)) {
             createShadowMap(worker, mapSize);
+        }
+
+        // The point light's map always exists (the composition reads it), at a tiny size until it's needed.
+        static const uint32_t PointShadowSizes[] = { 0, 512, 768, 1024 };
+        const uint32_t pointFaceSize = uint32_t(std::clamp(enhancementValue("RT64_LIGHT_POINT_SHADOW_SIZE", float(PointShadowSizes[getRasterLightingQuality()])), 0.0f, 2048.0f));
+        const float pointShadowStrength = enhancementValue("RT64_LIGHT_POINT_SHADOW", 1.0f);
+        pointShadowActive = (pointSceneIndex != UINT32_MAX) && !casters.empty() && (pointFaceSize >= 64) && (pointShadowStrength > 0.0f);
+        if ((pointShadowMap == nullptr) || (pointShadowActive && (pointShadowFaceSize != pointFaceSize))) {
+            createPointShadowMap(pointShadowActive ? pointFaceSize : 16);
+        }
+
+        hlslpp::float3 pointShadowLight(0.0f, 0.0f, 0.0f);
+        float pointShadowNear = 1.0f;
+        float pointShadowFar = 2.0f;
+        if (pointShadowActive) {
+            const Scene &pointScene = scenes[pointSceneIndex];
+            pointShadowLight = pointShadowOrigin;
+            pointShadowFar = std::max(float(pointScene.params.pointLightPosition.w), 200.0f);
+            pointShadowNear = std::clamp(enhancementValue("RT64_LIGHT_POINT_SHADOW_NEAR", 80.0f), 1.0f, pointShadowFar * 0.5f);
+            for (uint32_t face = 0; face < 6; face++) {
+                computePointShadowFace(face, pointShadowLight, pointShadowNear, pointShadowFar, pointShadowMatrices[face]);
+            }
         }
 
         // The normal buffer covers the biggest color target of the frame.
@@ -936,6 +1035,20 @@ namespace RT64 {
                 params.shadowMapParams = hlslpp::float4(1.0f / mapSize, 1.0f / mapSize, 0.0f, 0.0f);
             }
 
+            if (pointShadowActive && !scene.hasSun && (float(params.pointLightPosition.w) > 0.0f)) {
+                const float a = pointShadowFar / (pointShadowFar - pointShadowNear);
+                const float b = -pointShadowFar * pointShadowNear / (pointShadowFar - pointShadowNear);
+                params.pointShadowParams = hlslpp::float4(a, b, float(pointShadowFaceSize), pointShadowStrength);
+                params.pointShadowPosition = hlslpp::float4(pointShadowLight, pointShadowNear);
+                params.pointShadowParams2 = hlslpp::float4(enhancementValue("RT64_LIGHT_POINT_SHADOW_NORMAL_OFFSET", 1.5f), enhancementValue("RT64_LIGHT_POINT_SHADOW_BIAS", 1.5f),
+                    enhancementValue("RT64_LIGHT_POINT_SHADOW_SOFTNESS", 1.0f), 0.0f);
+            }
+            else {
+                params.pointShadowParams = hlslpp::float4(0.0f, 0.0f, 0.0f, 0.0f);
+                params.pointShadowPosition = hlslpp::float4(0.0f, 0.0f, 0.0f, 0.0f);
+                params.pointShadowParams2 = hlslpp::float4(0.0f, 0.0f, 0.0f, 0.0f);
+            }
+
             // Size of the region of the ambient occlusion texture used by the scene.
             const uint32_t sceneWidth = uint32_t(std::max(scene.rect.right - scene.rect.left, 0));
             const uint32_t sceneHeight = uint32_t(std::max(scene.rect.bottom - scene.rect.top, 0));
@@ -982,6 +1095,7 @@ namespace RT64 {
             set->setBuffer(set->gSkyAnalysis, sky->getAnalysisBuffer(), RenderBufferStructuredView(sizeof(interop::float4)));
             set->setTexture(set->gSceneColor, colorCopyTexture.get(), RenderTextureLayout::SHADER_READ);
             set->setTexture(set->gEmissiveLight, emissiveTextures[0].get(), RenderTextureLayout::SHADER_READ);
+            set->setTexture(set->gPointShadowMap, pointShadowMap.get(), RenderTextureLayout::DEPTH_READ, pointShadowMapView.get());
         }
 
         while (emissiveSets.size() < scenes.size()) {
@@ -1033,7 +1147,7 @@ namespace RT64 {
             return;
         }
 
-        // The shadow map must always be readable, even on frames that don't draw it.
+        // The shadow maps must always be readable, even on frames that don't draw them.
         if (shadowMapNeedsTransition) {
             worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(shadowMap.get(), RenderTextureLayout::DEPTH_WRITE));
             worker->commandList->setFramebuffer(shadowFramebuffer.get());
@@ -1042,20 +1156,24 @@ namespace RT64 {
             shadowMapNeedsTransition = false;
         }
 
-        if (!shadowMapActive || shadowMapRendered) {
+        if ((pointShadowMap != nullptr) && pointShadowNeedsTransition) {
+            worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(pointShadowMap.get(), RenderTextureLayout::DEPTH_WRITE));
+            worker->commandList->setFramebuffer(pointShadowFramebuffer.get());
+            worker->commandList->clearDepth(true, 1.0f);
+            worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(pointShadowMap.get(), RenderTextureLayout::DEPTH_READ));
+            pointShadowNeedsTransition = false;
+        }
+
+        const bool drawSun = shadowMapActive && !shadowMapRendered;
+        const bool drawPoint = pointShadowActive && !pointShadowRendered && (pointShadowMap != nullptr);
+        if (!drawSun && !drawPoint) {
             return;
         }
 
-        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(shadowMap.get(), RenderTextureLayout::DEPTH_WRITE));
-        worker->commandList->setFramebuffer(shadowFramebuffer.get());
+        RenderTexture *targetMap = drawSun ? shadowMap.get() : pointShadowMap.get();
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(targetMap, RenderTextureLayout::DEPTH_WRITE));
+        worker->commandList->setFramebuffer(drawSun ? shadowFramebuffer.get() : pointShadowFramebuffer.get());
         worker->commandList->clearDepth(true, 1.0f);
-        worker->commandList->setViewports(RenderViewport(0.0f, 0.0f, float(shadowMapSize), float(shadowMapSize)));
-        worker->commandList->setScissors(RenderRect(0, 0, int32_t(shadowMapSize), int32_t(shadowMapSize)));
-        worker->commandList->setGraphicsPipelineLayout(shadowPipelineLayout.get());
-        worker->commandList->setGraphicsDescriptorSet(commonSet, 0);
-        worker->commandList->setGraphicsDescriptorSet(textureSet, 1);
-        worker->commandList->setGraphicsDescriptorSet(textureSet, 2);
-        worker->commandList->setGraphicsDescriptorSet(framebufferSet, 3);
         worker->commandList->setVertexBuffers(0, vertexViews, vertexViewCount, inputSlots);
         worker->commandList->setIndexBuffer(indexView);
 
@@ -1063,7 +1181,27 @@ namespace RT64 {
         shadowCB.shadowMatrix = shadowMatrix;
         shadowCB.padding = { 0, 0, 0 };
 
-        // All the casters that follow each other in the index buffer are drawn at once.
+        // Opaque casters don't need their draw call parameters, so consecutive ranges of indices are drawn together. They're
+        // all drawn first so the depth test rejects as many pixels of the alpha tested casters as possible, which are
+        // expensive as they sample their textures like the RDP does.
+        const bool alphaTestedShadows = (enhancementValue("RT64_LIGHT_SHADOW_ALPHA", 1.0f) > 0.0f);
+        if (!mergedDraws) {
+            sortedCasters.clear();
+            for (const Caster &caster : casters) {
+                if (!caster.alphaTested || !alphaTestedShadows) {
+                    sortedCasters.push_back({ caster.sceneIndex, caster.instanceIndex, false });
+                }
+            }
+
+            if (alphaTestedShadows) {
+                for (const Caster &caster : casters) {
+                    if (caster.alphaTested) {
+                        sortedCasters.push_back(caster);
+                    }
+                }
+            }
+        }
+
         if (mergedDraws) {
             worker->commandList->setGraphicsPipelineLayout(shadowMergedPipelineLayout.get());
             worker->commandList->setGraphicsDescriptorSet(commonSet, 0);
@@ -1071,100 +1209,114 @@ namespace RT64 {
             worker->commandList->setGraphicsDescriptorSet(textureSet, 2);
             worker->commandList->setGraphicsDescriptorSet(framebufferSet, 3);
             worker->commandList->setGraphicsDescriptorSet(triangleDrawSet->get(), 4);
-            worker->commandList->setPipeline(shadowMergedPipeline.get());
-            uint32_t runIndexStart = 0;
-            uint32_t runIndexCount = 0;
-            auto flushRun = [&]() {
-                if (runIndexCount > 0) {
-                    shadowCB.renderIndex = runIndexStart / 3;
-                    worker->commandList->setGraphicsPushConstants(0, &shadowCB);
-                    worker->commandList->drawIndexedInstanced(runIndexCount, 1, runIndexStart, 0, 0);
-                    runIndexCount = 0;
+            worker->commandList->setPipeline(drawSun ? shadowMergedPipeline.get() : shadowMergedPointPipeline.get());
+        }
+        else {
+            worker->commandList->setGraphicsPipelineLayout(shadowPipelineLayout.get());
+            worker->commandList->setGraphicsDescriptorSet(commonSet, 0);
+            worker->commandList->setGraphicsDescriptorSet(textureSet, 1);
+            worker->commandList->setGraphicsDescriptorSet(textureSet, 2);
+            worker->commandList->setGraphicsDescriptorSet(framebufferSet, 3);
+        }
+
+        const RenderPipeline *opaquePipeline = drawSun ? shadowOpaquePipeline.get() : shadowOpaquePointPipeline.get();
+        const RenderPipeline *alphaPipeline = drawSun ? shadowAlphaPipeline.get() : shadowAlphaPointPipeline.get();
+        auto drawCasters = [&](const interop::float4x4 &matrix, const RenderViewport &viewport, const RenderRect &scissor) {
+            worker->commandList->setViewports(viewport);
+            worker->commandList->setScissors(scissor);
+            shadowCB.shadowMatrix = matrix;
+
+            // All the casters that follow each other in the index buffer are drawn at once.
+            if (mergedDraws) {
+                uint32_t runIndexStart = 0;
+                uint32_t runIndexCount = 0;
+                auto flushRun = [&]() {
+                    if (runIndexCount > 0) {
+                        shadowCB.renderIndex = runIndexStart / 3;
+                        worker->commandList->setGraphicsPushConstants(0, &shadowCB);
+                        worker->commandList->drawIndexedInstanced(runIndexCount, 1, runIndexStart, 0, 0);
+                        runIndexCount = 0;
+                    }
+                };
+
+                for (const Caster &caster : casters) {
+                    const InstanceDrawCall &drawCall = instanceDrawCalls[caster.instanceIndex];
+                    if ((drawCall.type != InstanceDrawCall::Type::IndexedTriangles) || (drawCall.triangles.faceCount == 0)) {
+                        continue;
+                    }
+
+                    if ((runIndexCount == 0) || ((runIndexStart + runIndexCount) != drawCall.triangles.indexStart)) {
+                        flushRun();
+                        runIndexStart = drawCall.triangles.indexStart;
+                    }
+
+                    runIndexCount += drawCall.triangles.faceCount * 3;
+                }
+
+                flushRun();
+                return;
+            }
+
+            const RenderPipeline *previousPipeline = nullptr;
+            uint32_t pendingIndexStart = 0;
+            uint32_t pendingIndexCount = 0;
+            auto flushPending = [&]() {
+                if (pendingIndexCount > 0) {
+                    worker->commandList->drawIndexedInstanced(pendingIndexCount, 1, pendingIndexStart, 0, 0);
+                    pendingIndexCount = 0;
                 }
             };
 
-            for (const Caster &caster : casters) {
+            for (const Caster &caster : sortedCasters) {
                 const InstanceDrawCall &drawCall = instanceDrawCalls[caster.instanceIndex];
                 if ((drawCall.type != InstanceDrawCall::Type::IndexedTriangles) || (drawCall.triangles.faceCount == 0)) {
                     continue;
                 }
 
-                if ((runIndexCount == 0) || ((runIndexStart + runIndexCount) != drawCall.triangles.indexStart)) {
-                    flushRun();
-                    runIndexStart = drawCall.triangles.indexStart;
+                const RenderPipeline *pipeline = caster.alphaTested ? alphaPipeline : opaquePipeline;
+                const uint32_t indexCount = drawCall.triangles.faceCount * 3;
+                if (!caster.alphaTested && (pipeline == previousPipeline) && (pendingIndexCount > 0) && ((pendingIndexStart + pendingIndexCount) == drawCall.triangles.indexStart)) {
+                    pendingIndexCount += indexCount;
+                    continue;
                 }
 
-                runIndexCount += drawCall.triangles.faceCount * 3;
-            }
+                flushPending();
+                if (pipeline != previousPipeline) {
+                    worker->commandList->setPipeline(pipeline);
+                    previousPipeline = pipeline;
+                }
 
-            flushRun();
-            worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(shadowMap.get(), RenderTextureLayout::DEPTH_READ));
-            shadowMapRendered = true;
-            return;
-        }
-        // Opaque casters don't need their draw call parameters, so consecutive ranges of indices are drawn together. They're
-        // all drawn first so the depth test rejects as many pixels of the alpha tested casters as possible, which are
-        // expensive as they sample their textures like the RDP does.
-        const bool alphaTestedShadows = (enhancementValue("RT64_LIGHT_SHADOW_ALPHA", 1.0f) > 0.0f);
-        const RenderPipeline *previousPipeline = nullptr;
-        uint32_t pendingIndexStart = 0;
-        uint32_t pendingIndexCount = 0;
-        auto flushPending = [&]() {
-            if (pendingIndexCount > 0) {
-                worker->commandList->drawIndexedInstanced(pendingIndexCount, 1, pendingIndexStart, 0, 0);
-                pendingIndexCount = 0;
-            }
-        };
-
-        sortedCasters.clear();
-        for (const Caster &caster : casters) {
-            if (!caster.alphaTested || !alphaTestedShadows) {
-                sortedCasters.push_back({ caster.sceneIndex, caster.instanceIndex, false });
-            }
-        }
-
-        if (alphaTestedShadows) {
-            for (const Caster &caster : casters) {
+                shadowCB.renderIndex = caster.instanceIndex;
+                worker->commandList->setGraphicsPushConstants(0, &shadowCB);
                 if (caster.alphaTested) {
-                    sortedCasters.push_back(caster);
+                    worker->commandList->drawIndexedInstanced(indexCount, 1, drawCall.triangles.indexStart, 0, 0);
                 }
-            }
-        }
-
-        for (const Caster &caster : sortedCasters) {
-            const InstanceDrawCall &drawCall = instanceDrawCalls[caster.instanceIndex];
-            if ((drawCall.type != InstanceDrawCall::Type::IndexedTriangles) || (drawCall.triangles.faceCount == 0)) {
-                continue;
-            }
-
-            const RenderPipeline *pipeline = caster.alphaTested ? shadowAlphaPipeline.get() : shadowOpaquePipeline.get();
-            const uint32_t indexCount = drawCall.triangles.faceCount * 3;
-            if (!caster.alphaTested && (pipeline == previousPipeline) && (pendingIndexCount > 0) && ((pendingIndexStart + pendingIndexCount) == drawCall.triangles.indexStart)) {
-                pendingIndexCount += indexCount;
-                continue;
+                else {
+                    pendingIndexStart = drawCall.triangles.indexStart;
+                    pendingIndexCount = indexCount;
+                }
             }
 
             flushPending();
-            if (pipeline != previousPipeline) {
-                worker->commandList->setPipeline(pipeline);
-                previousPipeline = pipeline;
+        };
+
+        if (drawSun) {
+            drawCasters(shadowMatrix, RenderViewport(0.0f, 0.0f, float(shadowMapSize), float(shadowMapSize)), RenderRect(0, 0, int32_t(shadowMapSize), int32_t(shadowMapSize)));
+            shadowMapRendered = true;
+        }
+        else {
+            // The six faces of the cube in a 3x2 atlas (column = face % 3, row = face / 3).
+            const int32_t size = int32_t(pointShadowFaceSize);
+            for (uint32_t face = 0; face < 6; face++) {
+                const int32_t x = int32_t(face % 3) * size;
+                const int32_t y = int32_t(face / 3) * size;
+                drawCasters(pointShadowMatrices[face], RenderViewport(float(x), float(y), float(size), float(size)), RenderRect(x, y, x + size, y + size));
             }
 
-            shadowCB.renderIndex = caster.instanceIndex;
-            worker->commandList->setGraphicsPushConstants(0, &shadowCB);
-            if (caster.alphaTested) {
-                worker->commandList->drawIndexedInstanced(indexCount, 1, drawCall.triangles.indexStart, 0, 0);
-            }
-            else {
-                pendingIndexStart = drawCall.triangles.indexStart;
-                pendingIndexCount = indexCount;
-            }
+            pointShadowRendered = true;
         }
 
-        flushPending();
-
-        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(shadowMap.get(), RenderTextureLayout::DEPTH_READ));
-        shadowMapRendered = true;
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(targetMap, RenderTextureLayout::DEPTH_READ));
     }
 
     void LightingRenderer::recordGBuffer(RenderWorker *worker, uint32_t sceneIndex, RenderDescriptorSet *commonSet, RenderDescriptorSet *textureSet, RenderDescriptorSet *framebufferSet,

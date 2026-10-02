@@ -111,6 +111,17 @@ namespace interop {
         // x warp of the shapes, y softness of the edges of the shadows, z octaves of the noise (0 skips the warp).
         float4 cloudShadowMisc;
 
+        // Shadows of the light carried in scenes without a sun (pointLightPosition), from the six faces of a cube laid out
+        // in a 3x2 atlas: x and y turn the distance along a face's axis into its depth (depth = x + y / distance), z size of
+        // a face in texels and w strength (0 if disabled).
+        float4 pointShadowParams;
+
+        // xyz position the shadows were drawn from (the same for every scene of the frame), w distance of the near plane.
+        float4 pointShadowPosition;
+
+        // x normal offset in texels, y depth bias in texels and z softness in texels.
+        float4 pointShadowParams2;
+
         // Glowing surfaces of scenes without a sun (see lightingEmissiveMask): x brightness of the strongest channel from
         // which colorful surfaces glow, y brightness added to the glowing surfaces themselves, z strength of the light they cast around them and
         // w most light they can add to a surface (0 if disabled).

@@ -46,6 +46,7 @@ namespace RT64 {
         uint32_t gSkyAnalysis;
         uint32_t gSceneColor;
         uint32_t gEmissiveLight;
+        uint32_t gPointShadowMap;
 
         LightingComposeDescriptorSet(const RenderSampler *shadowSampler, RenderDevice *device = nullptr) {
             builder.begin();
@@ -58,6 +59,7 @@ namespace RT64 {
             gSkyAnalysis = builder.addStructuredBuffer(7);
             gSceneColor = builder.addTexture(8);
             gEmissiveLight = builder.addTexture(9);
+            gPointShadowMap = builder.addTexture(10);
             builder.end();
 
             if (device != nullptr) {
@@ -184,6 +186,9 @@ namespace RT64 {
 
         // The game has a sky the host removed (e.g. in VR), so the background holds nothing worth keeping.
         bool skyHidden = false;
+
+        // Position of the player in the space of the geometry, if the host knows it (w = 1).
+        hlslpp::float4 focusPosition = { 0.0f, 0.0f, 0.0f, 0.0f };
     };
 
     struct LightingRenderer {
@@ -210,6 +215,7 @@ namespace RT64 {
             hlslpp::float3 worldUp;
             hlslpp::float3 worldForward;
             hlslpp::float3 worldOrigin;
+            hlslpp::float4 focusPosition;
         };
 
         struct Caster {
@@ -232,6 +238,9 @@ namespace RT64 {
         std::unique_ptr<RenderPipelineLayout> shadowPipelineLayout;
         std::unique_ptr<RenderPipeline> shadowOpaquePipeline;
         std::unique_ptr<RenderPipeline> shadowAlphaPipeline;
+        std::unique_ptr<RenderPipeline> shadowOpaquePointPipeline;
+        std::unique_ptr<RenderPipeline> shadowAlphaPointPipeline;
+        std::unique_ptr<RenderPipeline> shadowMergedPointPipeline;
         std::unique_ptr<RenderPipelineLayout> gbufferPipelineLayout;
         std::unique_ptr<RenderPipeline> gbufferPipelines[2][2];
         std::unique_ptr<RenderTexture> normalBuffer;
@@ -291,6 +300,14 @@ namespace RT64 {
         std::unique_ptr<RenderFramebuffer> shadowFramebuffer;
         uint32_t shadowMapSize = 0;
         bool shadowMapNeedsTransition = false;
+        std::unique_ptr<RenderTexture> pointShadowMap;
+        std::unique_ptr<RenderTextureView> pointShadowMapView;
+        std::unique_ptr<RenderFramebuffer> pointShadowFramebuffer;
+        uint32_t pointShadowFaceSize = 0;
+        bool pointShadowNeedsTransition = false;
+        bool pointShadowActive = false;
+        bool pointShadowRendered = false;
+        interop::float4x4 pointShadowMatrices[6];
         std::vector<std::unique_ptr<LightingComposeDescriptorSet>> composeSets;
         BufferPair paramsBuffer;
         std::vector<Scene> scenes;
@@ -360,6 +377,7 @@ namespace RT64 {
 
     private:
         void createShadowMap(RenderWorker *worker, uint32_t size);
+        void createPointShadowMap(uint32_t faceSize);
         void createNormalBuffer(RenderWorker *worker, uint32_t width, uint32_t height);
         void createAOTextures(uint32_t width, uint32_t height);
         ComposePipelines &getComposePipelines(const RenderMultisampling &multisampling, RenderFormat format);

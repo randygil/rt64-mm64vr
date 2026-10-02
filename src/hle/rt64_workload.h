@@ -237,6 +237,10 @@ namespace RT64 {
 
         // The host reported a sky RT64 can't see (see Application::setSkyBackgroundHint).
         bool skyBackgroundHint = false;
+
+        // Position of the player given by the host in the space the geometry is drawn in (see
+        // Application::setFocusPosition). W is 1 if it's known.
+        hlslpp::float4 focusPosition = { 0.0f, 0.0f, 0.0f, 0.0f };
         DebuggerRenderer debuggerRenderer;
         DebuggerCamera debuggerCamera;
         std::multimap<uint32_t, uint32_t> transformIdMap;
