@@ -21,6 +21,7 @@ Texture2D<float> gDepth : register(t2, space0);
 Texture2D<float> gShadowMap : register(t3, space0);
 SamplerComparisonState gShadowSampler : register(s4, space0);
 Texture2D<float4> gNormalBuffer : register(t5, space0);
+Texture2D<float2> gAmbientOcclusion : register(t6, space0);
 
 float loadDepth(int2 pixel) {
 #ifdef MULTISAMPLING
@@ -90,6 +91,35 @@ float sampleShadow(LightingParams params, float3 position, float3 normal, float 
     return lerp(1.0f, lit, edgeFade * params.shadowMapParams.z);
 }
 
+// Ambient occlusion from the half resolution texture, taking the neighbors at the most similar distance to the camera.
+float sampleAmbientOcclusion(LightingParams params, float2 pixelPosition, float cameraDistance) {
+    if (params.aoParams.w <= 0.0f) {
+        return 1.0f;
+    }
+
+    const float2 aoPosition = (pixelPosition - params.viewportRect.xy) * 0.5f - 0.5f;
+    const int2 basePixel = int2(floor(aoPosition));
+    const float2 fraction = aoPosition - float2(basePixel);
+    const int2 maxPixel = int2(params.aoParams2.zw) - 1;
+    float sum = 0.0f;
+    float weightSum = 0.0f;
+    [unroll]
+    for (int y = 0; y < 2; y++) {
+        [unroll]
+        for (int x = 0; x < 2; x++) {
+            const int2 samplePixel = clamp(basePixel + int2(x, y), int2(0, 0), maxPixel);
+            const float2 value = gAmbientOcclusion.Load(int3(samplePixel, 0));
+            const float bilinear = (x ? fraction.x : (1.0f - fraction.x)) * (y ? fraction.y : (1.0f - fraction.y));
+            const float similarity = 1.0f / (abs(value.y - cameraDistance) / (cameraDistance * 0.02f + 1.0f) + 0.05f);
+            const float weight = bilinear * similarity + 1e-5f;
+            sum += value.x * weight;
+            weightSum += weight;
+        }
+    }
+
+    return sum / weightSum;
+}
+
 float4 PSMain(in float4 pixelPosition : SV_POSITION) : SV_TARGET {
     const LightingParams params = gLightingParams[gConstants.sceneIndex];
     const int2 pixel = int2(pixelPosition.xy);
@@ -110,9 +140,12 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION) : SV_TARGET {
     const bool foliage = (foliageRadius > 0.0f);
     const float3 worldUp = params.worldUp.xyz;
 
-    // Light from the sky above and the ground below.
+    // Light from the sky above and the ground below, occluded by the surroundings. The occlusion between the crossed
+    // cards of foliage isn't real, so it's mostly left out there.
+    const float ambientOcclusion = sampleAmbientOcclusion(params, pixelPosition.xy, length(params.cameraPosition.xyz - position));
+    const float occlusion = lerp(1.0f, ambientOcclusion, params.aoParams.y * (foliage ? params.aoParams2.y : 1.0f));
     const float upFactor = dot(normal, worldUp) * 0.5f + 0.5f;
-    const float3 ambientLight = lerp(params.groundColor.rgb, params.ambientColor.rgb, upFactor);
+    const float3 ambientLight = lerp(params.groundColor.rgb, params.ambientColor.rgb, upFactor) * occlusion;
 
     // The sun.
     float3 sunLight = float3(0.0f, 0.0f, 0.0f);
@@ -152,7 +185,9 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION) : SV_TARGET {
         pointLight = params.pointLightColor.rgb * (diffuse * attenuation);
     }
 
-    float3 factor = (ambientLight + sunLight + pointLight) * params.lightingParams.y;
+    // Occlusion also darkens the direct light a bit, as the game's colors already include light from everywhere.
+    const float directOcclusion = lerp(1.0f, occlusion, params.aoParams2.x);
+    float3 factor = (ambientLight + (sunLight + pointLight) * directOcclusion) * params.lightingParams.y;
 
     // The game's fog covers the lighting.
     const float fogAlpha = lightingFogAlpha(params, depth);
@@ -174,6 +209,9 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION) : SV_TARGET {
     }
     else if (debugView == 5) {
         return float4(fogAlpha.xxx, 1.0f);
+    }
+    else if (debugView == 6) {
+        return float4(occlusion.xxx, 1.0f);
     }
 
     return float4(saturate(factor * 0.5f), 1.0f);

@@ -42,6 +42,7 @@ namespace RT64 {
         uint32_t gShadowMap;
         uint32_t gShadowSampler;
         uint32_t gNormalBuffer;
+        uint32_t gAmbientOcclusion;
 
         LightingComposeDescriptorSet(const RenderSampler *shadowSampler, RenderDevice *device = nullptr) {
             builder.begin();
@@ -50,6 +51,43 @@ namespace RT64 {
             gShadowMap = builder.addTexture(3);
             gShadowSampler = builder.addImmutableSampler(4, shadowSampler);
             gNormalBuffer = builder.addTexture(5);
+            gAmbientOcclusion = builder.addTexture(6);
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
+    struct LightingAODescriptorSet : RenderDescriptorSetBase {
+        uint32_t gLightingParams;
+        uint32_t gDepth;
+        uint32_t gNormalBuffer;
+        uint32_t gOutput;
+
+        LightingAODescriptorSet(RenderDevice *device = nullptr) {
+            builder.begin();
+            gLightingParams = builder.addStructuredBuffer(1);
+            gDepth = builder.addTexture(2);
+            gNormalBuffer = builder.addTexture(3);
+            gOutput = builder.addReadWriteTexture(4);
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
+    struct LightingAOBlurDescriptorSet : RenderDescriptorSetBase {
+        uint32_t gInput;
+        uint32_t gOutput;
+
+        LightingAOBlurDescriptorSet(RenderDevice *device = nullptr) {
+            builder.begin();
+            gInput = builder.addTexture(1);
+            gOutput = builder.addReadWriteTexture(2);
             builder.end();
 
             if (device != nullptr) {
@@ -155,6 +193,17 @@ namespace RT64 {
         uint32_t normalBufferHeight = 0;
         bool foliageNormalsSupported = false;
         bool gbufferEnabled = true;
+        std::unique_ptr<RenderPipelineLayout> aoPipelineLayout;
+        std::unique_ptr<RenderPipeline> aoPipeline;
+        std::unique_ptr<RenderPipeline> aoPipelineMS;
+        std::unique_ptr<RenderPipelineLayout> aoBlurPipelineLayout;
+        std::unique_ptr<RenderPipeline> aoBlurPipeline;
+        std::unique_ptr<RenderTexture> aoTextures[2];
+        uint32_t aoTextureWidth = 0;
+        uint32_t aoTextureHeight = 0;
+        std::vector<std::unique_ptr<LightingAODescriptorSet>> aoSets;
+        std::unique_ptr<LightingAOBlurDescriptorSet> aoBlurSets[2];
+        uint32_t frameIndex = 0;
         std::unique_ptr<RenderPipelineLayout> composePipelineLayout;
         std::unique_ptr<RenderPipelineLayout> copyPipelineLayout;
         std::unique_ptr<RenderShader> copyPixelShader;
@@ -219,6 +268,9 @@ namespace RT64 {
             const RenderVertexBufferView *vertexViews, const RenderInputSlot *inputSlots, uint32_t vertexViewCount, const RenderIndexBufferView *indexView,
             const std::vector<InstanceDrawCall> &instanceDrawCalls);
 
+        // Computes the ambient occlusion of a scene from its depth and normals. Must be called after recordGBuffer.
+        void recordAmbientOcclusion(RenderWorker *worker, uint32_t sceneIndex);
+
         // Lights the color target of a scene. The depth target must be readable (depth read layout).
         void recordCompose(RenderWorker *worker, uint32_t sceneIndex);
 
@@ -237,6 +289,7 @@ namespace RT64 {
     private:
         void createShadowMap(RenderWorker *worker, uint32_t size);
         void createNormalBuffer(RenderWorker *worker, uint32_t width, uint32_t height);
+        void createAOTextures(uint32_t width, uint32_t height);
         ComposePipelines &getComposePipelines(const RenderMultisampling &multisampling, RenderFormat format);
     };
 

@@ -15,6 +15,9 @@
 #include "shaders/LightingCopyPSMS.hlsl.spirv.h"
 #include "shaders/LightingComposePS.hlsl.spirv.h"
 #include "shaders/LightingComposePSMS.hlsl.spirv.h"
+#include "shaders/LightingAOCS.hlsl.spirv.h"
+#include "shaders/LightingAOCSMS.hlsl.spirv.h"
+#include "shaders/LightingAOBlurCS.hlsl.spirv.h"
 #include "shaders/LightingGBufferVS.hlsl.spirv.h"
 #include "shaders/LightingGBufferPS.hlsl.spirv.h"
 #include "shaders/LightingGBufferPSMS.hlsl.spirv.h"
@@ -28,6 +31,9 @@
 #   include "shaders/LightingCopyPSMS.hlsl.dxil.h"
 #   include "shaders/LightingComposePS.hlsl.dxil.h"
 #   include "shaders/LightingComposePSMS.hlsl.dxil.h"
+#   include "shaders/LightingAOCS.hlsl.dxil.h"
+#   include "shaders/LightingAOCSMS.hlsl.dxil.h"
+#   include "shaders/LightingAOBlurCS.hlsl.dxil.h"
 #   include "shaders/LightingGBufferVS.hlsl.dxil.h"
 #   include "shaders/LightingGBufferPS.hlsl.dxil.h"
 #   include "shaders/LightingGBufferPSMS.hlsl.dxil.h"
@@ -41,6 +47,9 @@
 #   include "shaders/LightingCopyPSMS.hlsl.metal.h"
 #   include "shaders/LightingComposePS.hlsl.metal.h"
 #   include "shaders/LightingComposePSMS.hlsl.metal.h"
+#   include "shaders/LightingAOCS.hlsl.metal.h"
+#   include "shaders/LightingAOCSMS.hlsl.metal.h"
+#   include "shaders/LightingAOBlurCS.hlsl.metal.h"
 #   include "shaders/LightingGBufferVS.hlsl.metal.h"
 #   include "shaders/LightingGBufferPS.hlsl.metal.h"
 #   include "shaders/LightingGBufferPSMS.hlsl.metal.h"
@@ -286,6 +295,34 @@ namespace RT64 {
             composePixelShaderMS = device->createShader(LIGHTING_SHADER_INPUTS(LightingComposePSMS, "PSMain", shaderFormat));
         }
 
+        // Ambient occlusion at half resolution and its blur.
+        {
+            LightingAODescriptorSet descriptorSet;
+            RenderPipelineLayoutBuilder layoutBuilder;
+            layoutBuilder.begin();
+            layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingAOCB), RenderShaderStageFlag::COMPUTE);
+            layoutBuilder.addDescriptorSet(descriptorSet);
+            layoutBuilder.end();
+            aoPipelineLayout = layoutBuilder.create(device);
+
+            std::unique_ptr<RenderShader> aoShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingAOCS, "CSMain", shaderFormat));
+            std::unique_ptr<RenderShader> aoShaderMS = device->createShader(LIGHTING_SHADER_INPUTS(LightingAOCSMS, "CSMain", shaderFormat));
+            aoPipeline = device->createComputePipeline(RenderComputePipelineDesc(aoPipelineLayout.get(), aoShader.get(), 8, 8, 1));
+            aoPipelineMS = device->createComputePipeline(RenderComputePipelineDesc(aoPipelineLayout.get(), aoShaderMS.get(), 8, 8, 1));
+
+            LightingAOBlurDescriptorSet blurDescriptorSet;
+            layoutBuilder.begin();
+            layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingAOBlurCB), RenderShaderStageFlag::COMPUTE);
+            layoutBuilder.addDescriptorSet(blurDescriptorSet);
+            layoutBuilder.end();
+            aoBlurPipelineLayout = layoutBuilder.create(device);
+
+            std::unique_ptr<RenderShader> blurShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingAOBlurCS, "CSMain", shaderFormat));
+            aoBlurPipeline = device->createComputePipeline(RenderComputePipelineDesc(aoBlurPipelineLayout.get(), blurShader.get(), 8, 8, 1));
+            aoBlurSets[0] = std::make_unique<LightingAOBlurDescriptorSet>(device);
+            aoBlurSets[1] = std::make_unique<LightingAOBlurDescriptorSet>(device);
+        }
+
         // Copy of the color target for the passes that read it.
         {
             LightingCopyDescriptorSet descriptorSet;
@@ -481,7 +518,7 @@ namespace RT64 {
                 }
             }
             else if (float(params.pointLightPosition.w) <= 0.0f) {
-                const float pointStrength = enhancementValue("RT64_LIGHT_POINT", 0.55f);
+                const float pointStrength = enhancementValue("RT64_LIGHT_POINT", 0.35f);
                 params.pointLightPosition = hlslpp::float4(position, light.attenuationRadius);
                 params.pointLightColor = hlslpp::float4(light.diffuseColor.x, light.diffuseColor.y, light.diffuseColor.z, 0.0f) * pointStrength;
             }
@@ -492,7 +529,7 @@ namespace RT64 {
             params.groundColor = hlslpp::float4(enhancementValue("RT64_LIGHT_GROUND_R", 0.50f), enhancementValue("RT64_LIGHT_GROUND_G", 0.47f), enhancementValue("RT64_LIGHT_GROUND_B", 0.42f), 0.0f);
         }
         else {
-            const float indoorAmbient = enhancementValue("RT64_LIGHT_INDOOR_AMBIENT", 0.8f);
+            const float indoorAmbient = enhancementValue("RT64_LIGHT_INDOOR_AMBIENT", 0.95f);
             params.ambientColor = hlslpp::float4(indoorAmbient, indoorAmbient, indoorAmbient, 0.0f);
             const float indoorGround = indoorAmbient * enhancementValue("RT64_LIGHT_INDOOR_GROUND", 0.85f);
             params.groundColor = hlslpp::float4(indoorGround, indoorGround, indoorGround, 0.0f);
@@ -501,6 +538,9 @@ namespace RT64 {
         params.fog = hlslpp::float4(desc.fogMul, desc.fogOffset, desc.fogEnabled ? 1.0f : 0.0f, 0.0f);
         params.lightingParams = hlslpp::float4(enhancementValue("RT64_LIGHT_STRENGTH", 1.0f), enhancementValue("RT64_LIGHT_EXPOSURE", 1.0f), enhancementValue("RT64_LIGHT_WRAP", 0.5f), enhancementValue("RT64_LIGHT_SHADING", 1.0f));
         params.foliageParams = hlslpp::float4(enhancementValue("RT64_LIGHT_FOLIAGE_WRAP", 0.8f), enhancementValue("RT64_LIGHT_FOLIAGE_TRANSLUCENCY", 0.6f), enhancementValue("RT64_LIGHT_FOLIAGE_SHADOW", 0.35f), enhancementValue("RT64_LIGHT_FOLIAGE_SHADOW_OFFSET", 1.0f));
+        static const float AOSlices[] = { 0.0f, 2.0f, 3.0f, 4.0f };
+        params.aoParams = hlslpp::float4(enhancementValue("RT64_LIGHT_AO_RADIUS", 160.0f), enhancementValue("RT64_LIGHT_AO_STRENGTH", 0.9f), enhancementValue("RT64_LIGHT_AO_POWER", 1.5f), enhancementValue("RT64_LIGHT_AO_SLICES", AOSlices[getRasterLightingQuality()]));
+        params.aoParams2 = hlslpp::float4(enhancementValue("RT64_LIGHT_AO_DIRECT", 0.35f), enhancementValue("RT64_LIGHT_AO_FOLIAGE", 0.3f), 0.0f, 0.0f);
         params.settings.x = uint32_t(enhancementValue("RT64_LIGHT_DEBUG", 0.0f));
         params.settings.y = uint32_t(getRasterLightingQuality());
         params.settings.z = (depthTarget != nullptr) ? depthTarget->multisampling.sampleCount : 1;
@@ -538,6 +578,16 @@ namespace RT64 {
         }
 
         scenes[sceneIndex].gbufferDraws.push_back({ instanceIndex, flags });
+    }
+
+    void LightingRenderer::createAOTextures(uint32_t width, uint32_t height) {
+        for (uint32_t i = 0; i < 2; i++) {
+            aoTextures[i] = device->createTexture(RenderTextureDesc::Texture2D(width, height, 1, RenderFormat::R16G16_FLOAT, RenderTextureFlag::STORAGE | RenderTextureFlag::UNORDERED_ACCESS));
+            aoTextures[i]->setName("Lighting Ambient Occlusion");
+        }
+
+        aoTextureWidth = width;
+        aoTextureHeight = height;
     }
 
     void LightingRenderer::createNormalBuffer(RenderWorker *worker, uint32_t width, uint32_t height) {
@@ -587,6 +637,14 @@ namespace RT64 {
             createNormalBuffer(worker, std::max(normalWidth, normalBufferWidth), std::max(normalHeight, normalBufferHeight));
         }
 
+        const uint32_t aoWidth = std::max((normalWidth + 1) / 2, 1U);
+        const uint32_t aoHeight = std::max((normalHeight + 1) / 2, 1U);
+        if ((aoTextures[0] == nullptr) || (aoTextureWidth < aoWidth) || (aoTextureHeight < aoHeight)) {
+            createAOTextures(std::max(aoWidth, aoTextureWidth), std::max(aoHeight, aoTextureHeight));
+        }
+
+        frameIndex++;
+
         // The shadow map follows the first scene with a sun, usually the main view.
         const Scene *sunScene = nullptr;
         for (const Scene &scene : scenes) {
@@ -630,6 +688,11 @@ namespace RT64 {
                 params.shadowMapParams = hlslpp::float4(1.0f / mapSize, 1.0f / mapSize, 0.0f, 0.0f);
             }
 
+            // Size of the region of the ambient occlusion texture used by the scene.
+            const uint32_t sceneWidth = uint32_t(std::max(scene.rect.right - scene.rect.left, 0));
+            const uint32_t sceneHeight = uint32_t(std::max(scene.rect.bottom - scene.rect.top, 0));
+            params.aoParams2.z = float(std::min((sceneWidth + 1) / 2, aoTextureWidth));
+            params.aoParams2.w = float(std::min((sceneHeight + 1) / 2, aoTextureHeight));
             paramsVector.emplace_back(params);
         }
 
@@ -661,7 +724,26 @@ namespace RT64 {
             set->setTexture(set->gDepth, scene.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ, scene.depthTarget->textureView.get());
             set->setTexture(set->gShadowMap, shadowMap.get(), RenderTextureLayout::DEPTH_READ, shadowMapView.get());
             set->setTexture(set->gNormalBuffer, normalBuffer.get(), RenderTextureLayout::SHADER_READ);
+            set->setTexture(set->gAmbientOcclusion, aoTextures[0].get(), RenderTextureLayout::SHADER_READ);
         }
+
+        while (aoSets.size() < scenes.size()) {
+            aoSets.emplace_back(std::make_unique<LightingAODescriptorSet>(device));
+        }
+
+        for (uint32_t i = 0; i < uint32_t(scenes.size()); i++) {
+            const Scene &scene = scenes[i];
+            LightingAODescriptorSet *set = aoSets[i].get();
+            set->setBuffer(set->gLightingParams, paramsBuffer.get(), RenderBufferStructuredView(sizeof(interop::LightingParams)));
+            set->setTexture(set->gDepth, scene.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ, scene.depthTarget->textureView.get());
+            set->setTexture(set->gNormalBuffer, normalBuffer.get(), RenderTextureLayout::SHADER_READ);
+            set->setTexture(set->gOutput, aoTextures[0].get(), RenderTextureLayout::GENERAL);
+        }
+
+        aoBlurSets[0]->setTexture(aoBlurSets[0]->gInput, aoTextures[0].get(), RenderTextureLayout::SHADER_READ);
+        aoBlurSets[0]->setTexture(aoBlurSets[0]->gOutput, aoTextures[1].get(), RenderTextureLayout::GENERAL);
+        aoBlurSets[1]->setTexture(aoBlurSets[1]->gInput, aoTextures[1].get(), RenderTextureLayout::SHADER_READ);
+        aoBlurSets[1]->setTexture(aoBlurSets[1]->gOutput, aoTextures[0].get(), RenderTextureLayout::GENERAL);
     }
 
     void LightingRenderer::recordShadowMap(RenderWorker *worker, RenderDescriptorSet *commonSet, RenderDescriptorSet *textureSet, RenderDescriptorSet *framebufferSet,
@@ -826,6 +908,48 @@ namespace RT64 {
         }
 
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(normalBuffer.get(), RenderTextureLayout::SHADER_READ));
+    }
+
+    void LightingRenderer::recordAmbientOcclusion(RenderWorker *worker, uint32_t sceneIndex) {
+        assert(sceneIndex < scenes.size());
+        const Scene &scene = scenes[sceneIndex];
+        const uint32_t width = uint32_t(scene.params.aoParams2.z);
+        const uint32_t height = uint32_t(scene.params.aoParams2.w);
+        if ((scene.params.aoParams.w <= 0.0f) || (scene.params.aoParams.y <= 0.0f) || (width == 0) || (height == 0) || (sceneIndex >= aoSets.size())) {
+            worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(aoTextures[0].get(), RenderTextureLayout::SHADER_READ));
+            return;
+        }
+
+        const uint32_t dispatchX = (width + 7) / 8;
+        const uint32_t dispatchY = (height + 7) / 8;
+        const bool multisampling = (scene.depthTarget->multisampling.sampleCount > 1);
+        interop::LightingAOCB aoCB;
+        aoCB.sceneIndex = sceneIndex;
+        aoCB.outputSize = { width, height };
+        aoCB.frameIndex = frameIndex;
+        worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderTextureBarrier(aoTextures[0].get(), RenderTextureLayout::GENERAL));
+        worker->commandList->setPipeline(multisampling ? aoPipelineMS.get() : aoPipeline.get());
+        worker->commandList->setComputePipelineLayout(aoPipelineLayout.get());
+        worker->commandList->setComputePushConstants(0, &aoCB);
+        worker->commandList->setComputeDescriptorSet(aoSets[sceneIndex]->get(), 0);
+        worker->commandList->dispatch(dispatchX, dispatchY, 1);
+
+        // Horizontal and vertical blur, ending back in the first texture.
+        interop::LightingAOBlurCB blurCB;
+        blurCB.size = { width, height };
+        worker->commandList->setPipeline(aoBlurPipeline.get());
+        worker->commandList->setComputePipelineLayout(aoBlurPipelineLayout.get());
+        for (uint32_t pass = 0; pass < 2; pass++) {
+            RenderTexture *input = aoTextures[pass].get();
+            RenderTexture *output = aoTextures[pass ^ 1].get();
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, { RenderTextureBarrier(input, RenderTextureLayout::SHADER_READ), RenderTextureBarrier(output, RenderTextureLayout::GENERAL) });
+            blurCB.direction = (pass == 0) ? interop::int2(1, 0) : interop::int2(0, 1);
+            worker->commandList->setComputePushConstants(0, &blurCB);
+            worker->commandList->setComputeDescriptorSet(aoBlurSets[pass]->get(), 0);
+            worker->commandList->dispatch(dispatchX, dispatchY, 1);
+        }
+
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(aoTextures[0].get(), RenderTextureLayout::SHADER_READ));
     }
 
     LightingRenderer::ComposePipelines &LightingRenderer::getComposePipelines(const RenderMultisampling &multisampling, RenderFormat format) {

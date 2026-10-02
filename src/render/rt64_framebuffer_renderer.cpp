@@ -785,6 +785,7 @@ namespace RT64 {
                     submitDepthAccess(worker, fbStorage, true, depthState);
                     lighting->recordGBuffer(worker, drawCall.lighting.sceneIndex, descCommonSet->get(), descTextureSet->get(), descRealFbSet, indexedVertexViews.data(),
                         vertexInputSlots.data(), uint32_t(indexedVertexViews.size()), &indexBufferView, instanceDrawCallVector);
+                    lighting->recordAmbientOcclusion(worker, drawCall.lighting.sceneIndex);
                     lighting->recordCompose(worker, drawCall.lighting.sceneIndex);
                     lighting->recordSky(worker, drawCall.lighting.sceneIndex);
                     worker->commandList->setFramebuffer(fbStorage->colorWriteDepthRead.get());

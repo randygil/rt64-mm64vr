@@ -77,6 +77,13 @@ namespace interop {
         // lookups are moved towards the sun relative to the size of the tree.
         float4 foliageParams;
 
+        // Ambient occlusion: x radius in world units, y strength, z power, w slices (0 if disabled).
+        float4 aoParams;
+
+        // x strength of the ambient occlusion on the direct light, y strength on foliage, zw size of the ambient occlusion
+        // texture.
+        float4 aoParams2;
+
         // x debug view, y quality level, z sample count of the depth buffer, w flags.
         uint4 settings;
     };
@@ -95,6 +102,17 @@ namespace interop {
         uint indexStart;
         uint flags;
         uint padding;
+    };
+
+    struct LightingAOCB {
+        uint sceneIndex;
+        uint2 outputSize;
+        uint frameIndex;
+    };
+
+    struct LightingAOBlurCB {
+        uint2 size;
+        int2 direction;
     };
 
     struct LightingComposeCB {
