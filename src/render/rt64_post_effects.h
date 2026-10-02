@@ -29,7 +29,9 @@ namespace RT64 {
         // Region of the targets covered by the scene.
         RenderRect rect;
 
-        // Matrices, sun, camera and fog of the scene.
+        // Matrices, sun, camera and fog of the scene. The effects keep their textures per scene and tell the scenes apart
+        // by this address, so it must be unique to the scene within the frame and stay the same on the next frames (like
+        // the parameters stored by LightingRenderer).
         const interop::LightingParams *lighting = nullptr;
 
         // Copy of the color target with the scene as it is when the effects start (resolved if multisampled), in the
@@ -50,7 +52,10 @@ namespace RT64 {
         // Whether any effect is enabled, so the caller can skip copying the scene.
         bool enabled() const;
 
-        // Applies the effects to the region of the scene. Can change the bound framebuffer, pipeline and descriptor sets.
+        // Applies the effects to the region of the scene. Must be called at most once per scene and frame, and the frames
+        // must be recorded one after the other (each one finishes on the GPU before the next is recorded), as a scene's
+        // resources are resized and updated when it's recorded again. Can change the bound framebuffer, pipeline and
+        // descriptor sets.
         void record(RenderWorker *worker, const PostEffectsSceneDesc &desc);
     };
 };
