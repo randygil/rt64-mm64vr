@@ -460,7 +460,10 @@ namespace RT64 {
         }
 
         scene.worldOrigin = (float(desc.worldOrigin.w) > 0.0f) ? desc.worldOrigin.xyz : hlslpp::float3(0.0f, 0.0f, 0.0f);
+        params.worldRight = hlslpp::float4(scene.worldRight, 0.0f);
         params.worldUp = hlslpp::float4(scene.worldUp, 0.0f);
+        params.worldForward = hlslpp::float4(scene.worldForward, 0.0f);
+        params.worldOrigin = hlslpp::float4(scene.worldOrigin, (float(desc.worldOrigin.w) > 0.0f) ? 1.0f : 0.0f);
 
         // The sun is the light placed much further away than anything else. Other lights are carried with the camera.
         const float sunStrength = enhancementValue("RT64_LIGHT_SUN", 0.9f);

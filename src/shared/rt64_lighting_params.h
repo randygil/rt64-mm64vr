@@ -46,8 +46,12 @@ namespace interop {
         // Light received by surfaces facing down, from the ground.
         float4 groundColor;
 
-        // Direction pointing up in the world.
+        // Basis of the world (directions pointing right, up and forward) and its origin (w = 1 if known), in the space
+        // of the geometry. Effects that must stay fixed in the world (like clouds) use them.
+        float4 worldRight;
         float4 worldUp;
+        float4 worldForward;
+        float4 worldOrigin;
 
         // Position of the camera.
         float4 cameraPosition;
