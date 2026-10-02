@@ -13,6 +13,7 @@
 // Flags of LightingParams::settings.w.
 #define LIGHTING_SCENE_FLAG_SKY_HIDDEN  0x1
 #define LIGHTING_SCENE_FLAG_SKY_TINT    0x2
+#define LIGHTING_SCENE_FLAG_GBUFFER     0x4
 
 // Flags of the draw calls drawn into the normal buffer.
 #define LIGHTING_GBUFFER_ALPHA_TESTED   0x1
@@ -95,8 +96,9 @@ namespace interop {
         // depth buffer, z strength, w steps of the rays (0 if disabled).
         float4 contactParams;
 
-        // x strength of the tint the light takes from skies that aren't daytime skies (LIGHTING_SCENE_FLAG_SKY_TINT).
-        float4 lightingTint;
+        // x strength of the tint the light takes from skies that aren't daytime skies (LIGHTING_SCENE_FLAG_SKY_TINT), y height
+        // above a surface under which the ambient occlusion ignores other surfaces (thin layers like signs and posters).
+        float4 miscParams;
 
         // x debug view, y quality level, z sample count of the depth buffer, w flags.
         uint4 settings;

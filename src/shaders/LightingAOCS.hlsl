@@ -235,8 +235,9 @@ void CSMain(uint2 threadId : SV_DispatchThreadID) {
                 const float3 samplePosition = lightingWorldPosition(params, samplePixel, sampleDepth);
                 const float3 delta = samplePosition - position;
 
-                // Layers just above the surface (signs, posters, decals drawn as their own geometry) don't occlude it.
-                if (dot(delta, normal) < 4.0f) {
+                // Layers just above the surface (signs, posters, decals drawn as their own geometry) don't occlude it. Seen at
+                // a grazing angle, their edges would darken the wall next to them.
+                if (dot(delta, normal) < params.miscParams.y) {
                     continue;
                 }
 

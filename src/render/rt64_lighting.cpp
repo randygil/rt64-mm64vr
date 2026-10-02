@@ -620,7 +620,10 @@ namespace RT64 {
             params.settings.w |= LIGHTING_SCENE_FLAG_SKY_TINT;
         }
 
-        params.lightingTint = hlslpp::float4(skyTint, 0.0f, 0.0f, 0.0f);
+        params.miscParams = hlslpp::float4(skyTint, enhancementValue("RT64_LIGHT_AO_MIN_HEIGHT", 12.0f), 0.0f, 0.0f);
+        if (gbufferEnabled) {
+            params.settings.w |= LIGHTING_SCENE_FLAG_GBUFFER;
+        }
 
         scenes.emplace_back(scene);
         return sceneIndex;

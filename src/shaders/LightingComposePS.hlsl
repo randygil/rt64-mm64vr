@@ -40,7 +40,7 @@ float3 skyLightTint(LightingParams params) {
 
     const float daytime = smoothstep(0.02f, 0.10f, skyColor.b - skyColor.r) * smoothstep(-0.02f, 0.04f, skyColor.g - skyColor.r);
     const float3 chroma = saturate(skyColor / luma * 0.8f + 0.2f);
-    return lerp(float3(1.0f, 1.0f, 1.0f), chroma, params.lightingTint.x * (1.0f - daytime));
+    return lerp(float3(1.0f, 1.0f, 1.0f), chroma, params.miscParams.x * (1.0f - daytime));
 }
 
 float loadDepth(int2 pixel) {
@@ -223,6 +223,12 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
                 normalSample = neighborNormal;
                 break;
             }
+        }
+
+        // A surface no neighbor shows is only seen through a crack between others (like the seams between the quads of a
+        // wall): its normal can't be known, so it keeps its original color instead of being lit as something else.
+        if ((normalSample.w <= 0.5f) && ((params.settings.w & LIGHTING_SCENE_FLAG_GBUFFER) != 0)) {
+            discard;
         }
     }
 #endif
