@@ -805,11 +805,25 @@ namespace RT64 {
             // Bounding sphere of the part of the view frustum that receives shadows, with its center along the view
             // direction where the sphere is the smallest. Its size only depends on the field of view, so it stays the
             // same while the camera turns and the texels keep their size.
-            const float shadowDistance = enhancementValue("RT64_LIGHT_SHADOW_DISTANCE", 4000.0f);
+            float shadowDistance = enhancementValue("RT64_LIGHT_SHADOW_DISTANCE", 4000.0f);
             const float casterDistance = enhancementValue("RT64_LIGHT_SHADOW_CASTER_DISTANCE", 6000.0f);
             const float k = std::max(sunScene->frustumSlope, 0.1f);
-            const float centerDistance = std::min(shadowDistance * (1.0f + k * k) * 0.5f, shadowDistance);
-            float radius = std::max(centerDistance, sqrtf((shadowDistance - centerDistance) * (shadowDistance - centerDistance) + (shadowDistance * k) * (shadowDistance * k)));
+            auto sphereRadius = [k](float distance, float center) {
+                return std::max(center, sqrtf((distance - center) * (distance - center) + (distance * k) * (distance * k)));
+            };
+
+            float centerDistance = std::min(shadowDistance * (1.0f + k * k) * 0.5f, shadowDistance);
+            float radius = sphereRadius(shadowDistance, centerDistance);
+
+            // Wide fields of view (VR) would make the sphere and the texels much bigger: the distance the shadows reach is
+            // shortened instead, as the radius grows linearly with it.
+            const float maxRadius = enhancementValue("RT64_LIGHT_SHADOW_MAX_RADIUS", 3000.0f);
+            if (radius > maxRadius) {
+                shadowDistance *= maxRadius / radius;
+                centerDistance = std::min(shadowDistance * (1.0f + k * k) * 0.5f, shadowDistance);
+                radius = sphereRadius(shadowDistance, centerDistance);
+            }
+
             radius = ceilf(radius / 16.0f) * 16.0f;
 
             const hlslpp::float3 center = sunScene->cameraPosition + sunScene->viewDirection * centerDistance;
