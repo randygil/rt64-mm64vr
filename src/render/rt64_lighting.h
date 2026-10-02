@@ -211,6 +211,7 @@ namespace RT64 {
         std::unique_ptr<RenderPipeline> gbufferPipelines[2][2];
         std::unique_ptr<RenderTexture> normalBuffer;
         std::unique_ptr<RenderFramebuffer> normalFramebuffer;
+        std::unique_ptr<RenderTexture> normalDepth;
         uint32_t normalBufferWidth = 0;
         uint32_t normalBufferHeight = 0;
         bool foliageNormalsSupported = false;

@@ -2025,7 +2025,7 @@ namespace RT64 {
         int32_t lightingSceneIndex = -1;
         interop::float4x4 lightingViewProj;
         const float lightingSmoothNormalAngle = lightingActive ? enhancementValue("RT64_LIGHT_SMOOTH_NORMALS", 75.0f) : 0.0f;
-        static const uint32_t SmoothNormalTriangles[] = { 0, 256, 1024, 1024 };
+        static const uint32_t SmoothNormalTriangles[] = { 0, 512, 1024, 1024 };
         const uint32_t lightingSmoothNormalTriangles = uint32_t(enhancementValue("RT64_LIGHT_SMOOTH_NORMALS_MAX", float(SmoothNormalTriangles[getRasterLightingQuality()])));
         thread_local std::vector<uint32_t> lightingDeferred;
         thread_local std::vector<interop::float4x4> lightingLitViewProjs;

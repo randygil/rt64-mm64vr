@@ -282,6 +282,13 @@ namespace RT64 {
             gbufferDesc.primitiveTopology = RenderPrimitiveTopology::TRIANGLE_LIST;
             gbufferDesc.cullMode = RenderCullMode::NONE;
             gbufferDesc.depthClipEnabled = false;
+
+            // Where two surfaces both match the depth buffer within the tolerance (where they cross), the nearest one
+            // keeps its normal instead of whichever was drawn last.
+            gbufferDesc.depthEnabled = true;
+            gbufferDesc.depthWriteEnabled = true;
+            gbufferDesc.depthFunction = RenderComparisonFunction::LESS_EQUAL;
+            gbufferDesc.depthTargetFormat = RenderFormat::D32_FLOAT;
             gbufferDesc.renderTargetFormat[0] = RenderFormat::R16G16B16A16_UNORM;
             gbufferDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
             gbufferDesc.renderTargetCount = 1;
@@ -677,10 +684,13 @@ namespace RT64 {
     void LightingRenderer::createNormalBuffer(RenderWorker *worker, uint32_t width, uint32_t height) {
         normalFramebuffer.reset();
         normalBuffer.reset();
+        normalDepth.reset();
         normalBuffer = device->createTexture(RenderTextureDesc::ColorTarget(width, height, RenderFormat::R16G16B16A16_UNORM));
         normalBuffer->setName("Lighting Normal Buffer");
+        normalDepth = device->createTexture(RenderTextureDesc::DepthTarget(width, height, RenderFormat::D32_FLOAT));
+        normalDepth->setName("Lighting Normal Buffer Depth");
         const RenderTexture *colorAttachment = normalBuffer.get();
-        normalFramebuffer = device->createFramebuffer(RenderFramebufferDesc(&colorAttachment, 1));
+        normalFramebuffer = device->createFramebuffer(RenderFramebufferDesc(&colorAttachment, 1, normalDepth.get()));
         normalBufferWidth = width;
         normalBufferHeight = height;
     }
@@ -1067,9 +1077,14 @@ namespace RT64 {
             return;
         }
 
-        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(normalBuffer.get(), RenderTextureLayout::COLOR_WRITE));
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, {
+            RenderTextureBarrier(normalBuffer.get(), RenderTextureLayout::COLOR_WRITE),
+            RenderTextureBarrier(normalDepth.get(), RenderTextureLayout::DEPTH_WRITE)
+        });
+
         worker->commandList->setFramebuffer(normalFramebuffer.get());
         worker->commandList->clearColor(0, RenderColor(0.0f, 0.0f, 0.0f, 0.0f), &scene.rect, 1);
+        worker->commandList->clearDepth(true, 1.0f, &scene.rect, 1);
         if (!scene.gbufferDraws.empty()) {
             const bool multisampling = (scene.depthTarget->multisampling.sampleCount > 1);
             worker->commandList->setViewports(scene.viewport);

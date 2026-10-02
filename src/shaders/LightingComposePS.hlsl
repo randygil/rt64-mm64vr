@@ -209,22 +209,29 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
 
     const float3 position = lightingWorldPosition(params, pixelPosition.xy, depth);
     // The normal buffer stores the nearest surface of each pixel. The farther surface of an edge pixel takes the normal
-    // of a neighbor that shows it, so it's lit like the rest of that surface.
+    // of a neighbor that shows it, so it's lit like the rest of that surface. So does a nearest surface the normal pass
+    // left out, like the antialiased edge of a cutout whose coverage the raster pass kept but whose alpha the normal
+    // pass rejected: the normal from the depth there mixes both surfaces and leaves dark lines along the edge.
     float4 normalSample = gNormalBuffer.Load(int3(pixel, 0));
-#ifdef MULTISAMPLING
-    if (gConstants.surfacePass == 1) {
+#ifndef MULTISAMPLING
+    const float tolerance = max(CoplanarDepthTolerance(depth), 1e-5f);
+#endif
+    const bool farSurfacePass = (gConstants.surfacePass == 1);
+    if (farSurfacePass || (normalSample.w <= 0.5f)) {
         const int2 Neighbors[4] = { int2(-1, 0), int2(1, 0), int2(0, -1), int2(0, 1) };
         normalSample = float4(0.0f, 0.0f, 0.0f, 0.0f);
         for (uint n = 0; n < 4; n++) {
             const int2 neighborPixel = pixel + Neighbors[n];
-            const float neighborDepth = gDepth.Load(neighborPixel, 0);
+            const float neighborDepth = loadDepth(neighborPixel);
             const float4 neighborNormal = gNormalBuffer.Load(int3(neighborPixel, 0));
             if ((abs(neighborDepth - depth) <= tolerance * 4.0f) && (neighborNormal.w > 0.5f)) {
                 normalSample = neighborNormal;
                 break;
             }
         }
-
+    }
+#ifdef MULTISAMPLING
+    if (farSurfacePass) {
         // A surface no neighbor shows is only seen through a crack between others (like the seams between the quads of a
         // wall): its normal can't be known, so it keeps its original color instead of being lit as something else.
         if ((normalSample.w <= 0.5f) && ((params.settings.w & LIGHTING_SCENE_FLAG_GBUFFER) != 0)) {
