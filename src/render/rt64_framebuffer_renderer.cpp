@@ -528,6 +528,13 @@ namespace RT64 {
         }
 #   endif
 
+        // The passes of the enhanced lighting read the world positions, normals and indices of the vertices.
+        if (lightingBuffersActive && !raytracingEnabled) {
+            descCommonSet->setBuffer(descCommonSet->posBuffer, outputBuffers->worldPosBuffer.buffer.get(), outputBuffers->worldPosBuffer.allocatedSize);
+            descCommonSet->setBuffer(descCommonSet->normBuffer, outputBuffers->worldNormBuffer.buffer.get(), outputBuffers->worldNormBuffer.allocatedSize);
+            descCommonSet->setBuffer(descCommonSet->indexBuffer, drawBuffers->faceIndicesBuffer.get(), drawBuffers->faceIndicesBuffer.allocatedSize);
+        }
+
         descCommonSet->setBuffer(descCommonSet->FrParams, frameParamsBuffer.get(), sizeof(interop::FrameParams));
         descCommonSet->setBuffer(descCommonSet->instanceRenderIndices, renderIndicesBuffer.get(), RenderBufferStructuredView(sizeof(interop::RenderIndices)));
         descCommonSet->setBuffer(descCommonSet->instanceRDPParams, drawBuffers->rdpParamsBuffer.get(), RenderBufferStructuredView(sizeof(interop::RDPParams)));
@@ -599,6 +606,10 @@ namespace RT64 {
     void FramebufferRenderer::updateShaderViews(RenderWorker *worker, const DrawBuffers *drawBuffers, const OutputBuffers *outputBuffers, const bool raytracingEnabled) {
         updateShaderDescriptorSet(worker, drawBuffers, outputBuffers, raytracingEnabled);
         updateRSPVertexTestZSet(worker, drawBuffers, outputBuffers);
+
+        if (lightingBuffersActive && !raytracingEnabled) {
+            updateRSPSmoothNormalSet(worker, drawBuffers, outputBuffers);
+        }
 
 #   if RT_ENABLED
         if (raytracingEnabled) {
@@ -772,6 +783,8 @@ namespace RT64 {
                 if ((lighting != nullptr) && (fbStorage->colorTarget != nullptr)) {
                     // The lighting reads the depth buffer, so it's switched to the read only layout first.
                     submitDepthAccess(worker, fbStorage, true, depthState);
+                    lighting->recordGBuffer(worker, drawCall.lighting.sceneIndex, descCommonSet->get(), descTextureSet->get(), descRealFbSet, indexedVertexViews.data(),
+                        vertexInputSlots.data(), uint32_t(indexedVertexViews.size()), &indexBufferView, instanceDrawCallVector);
                     lighting->recordCompose(worker, drawCall.lighting.sceneIndex);
                     worker->commandList->setFramebuffer(fbStorage->colorWriteDepthRead.get());
                     switchToGraphicsPipeline();
@@ -1602,6 +1615,10 @@ namespace RT64 {
             vertexProcessor->recordCommandList(worker, shaderLibrary, outputBuffers);
         }
 
+        if (lightingBuffersActive && !rtEnabled && (vertexProcessor != nullptr) && !rspSmoothNormalVector.empty()) {
+            submitRSPSmoothNormalCompute(worker, outputBuffers);
+        }
+
 #   if RT_ENABLED
         if (rtEnabled) {
             assert(rtResources != nullptr);
@@ -1646,8 +1663,8 @@ namespace RT64 {
 
         // The shadow map of the enhanced lighting is drawn before the framebuffer that uses it.
         if ((lighting != nullptr) && framebuffer.hasLighting) {
-            if (worldPosBuffer != nullptr) {
-                worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderBufferBarrier(worldPosBuffer, RenderBufferAccess::READ));
+            if ((worldPosBuffer != nullptr) && (worldNormBuffer != nullptr)) {
+                worker->commandList->barriers(RenderBarrierStage::GRAPHICS, { RenderBufferBarrier(worldPosBuffer, RenderBufferAccess::READ), RenderBufferBarrier(worldNormBuffer, RenderBufferAccess::READ) });
             }
 
             lighting->recordShadowMap(worker, descCommonSet->get(), descTextureSet->get(), framebuffer.descDummyFbSet->get(), shadowVertexViews.data(), vertexInputSlots.data(),
@@ -1801,6 +1818,7 @@ namespace RT64 {
         shadowVertexViews[1] = indexedVertexViews[1];
         shadowVertexViews[2] = indexedVertexViews[2];
         worldPosBuffer = outputBuffers.worldPosBuffer.buffer.get();
+        worldNormBuffer = outputBuffers.worldNormBuffer.buffer.get();
         framebuffer.hasLighting = false;
 
         RasterScene rasterScene;
@@ -1867,6 +1885,7 @@ namespace RT64 {
         const bool lightingActive = p.lightingEnabled && (lighting != nullptr) && (p.fbStorage->colorTarget != nullptr) && (p.fbStorage->depthTarget != nullptr) && fbPair.depthWrite;
         int32_t lightingSceneIndex = -1;
         interop::float4x4 lightingViewProj;
+        const float lightingSmoothNormalAngle = lightingActive ? enhancementValue("RT64_LIGHT_SMOOTH_NORMALS", 75.0f) : 0.0f;
         thread_local std::vector<uint32_t> lightingDeferred;
         thread_local std::vector<interop::float4x4> lightingLitViewProjs;
         lightingDeferred.clear();
@@ -1992,6 +2011,9 @@ namespace RT64 {
                     sceneDesc.worldOrigin = p.curWorkload->worldOrigin;
                     sceneDesc.lights = (proj.pointLightCount > 0) ? proj.pointLights.data() : nullptr;
                     sceneDesc.lightCount = proj.pointLightCount;
+                    sceneDesc.screenScale = screenScale;
+                    sceneDesc.screenOffset = screenOffset;
+                    sceneDesc.viewport = framebuffer.viewport;
 
                     // The fog of the game, taken from the first draw call that uses it.
                     for (uint32_t d = 0; d < proj.gameCallCount; d++) {
@@ -2225,8 +2247,35 @@ namespace RT64 {
                                 lightingDeferredCall = true;
                             }
                             else if (!copyMode && otherMode.zUpd() && (otherMode.zMode() != ZMODE_DEC) && !triangles.vertexTestZ && !triangles.scissor.isEmpty()) {
+                                const uint32_t callInstanceIndex = uint32_t(instanceDrawCallVector.size());
                                 const bool alphaTested = otherMode.cvgXAlpha() || (otherMode.alphaCompare() != G_AC_NONE);
-                                lighting->addCaster(uint32_t(instanceDrawCallVector.size()), alphaTested);
+                                const bool rspLit = call.callDesc.rspLit;
+                                lighting->addCaster(callInstanceIndex, alphaTested);
+
+                                // Unlit cutouts are usually foliage drawn as flat cards.
+                                uint32_t gbufferFlags = 0;
+                                gbufferFlags |= alphaTested ? LIGHTING_GBUFFER_ALPHA_TESTED : 0;
+                                gbufferFlags |= rspLit ? LIGHTING_GBUFFER_RSP_LIT : 0;
+                                gbufferFlags |= (alphaTested && !rspLit && call.shaderDesc.flags.usesTexture0) ? LIGHTING_GBUFFER_FOLIAGE : 0;
+                                lighting->addGBufferDraw(uint32_t(lightingSceneIndex), callInstanceIndex, gbufferFlags);
+
+                                // Geometry without lighting has no normals: smooth ones are computed from its faces. Large
+                                // draw calls are skipped as the cost grows with the square of the triangle count, and
+                                // consecutive ranges are merged to weld the models drawn in several calls.
+                                if ((lightingSmoothNormalAngle > 0.0f) && !rspLit && !alphaTested && (call.callDesc.triangleCount <= 1024)) {
+                                    const uint32_t indexStart = call.meshDesc.faceIndicesStart;
+                                    const uint32_t indexCount = call.callDesc.triangleCount * 3;
+                                    if (!rspSmoothNormalVector.empty() && ((rspSmoothNormalVector.back().indexStart + rspSmoothNormalVector.back().indexCount) == indexStart) && ((rspSmoothNormalVector.back().indexCount + indexCount) <= (1024 * 3))) {
+                                        rspSmoothNormalVector.back().indexCount += indexCount;
+                                    }
+                                    else {
+                                        RSPSmoothNormalGenerationCB rspSmoothNormal;
+                                        rspSmoothNormal.indexStart = indexStart;
+                                        rspSmoothNormal.indexCount = indexCount;
+                                        rspSmoothNormal.creaseCosine = cosf(lightingSmoothNormalAngle * 3.14159265f / 180.0f);
+                                        rspSmoothNormalVector.push_back(rspSmoothNormal);
+                                    }
+                                }
                             }
                         }
                     }
@@ -2390,6 +2439,7 @@ namespace RT64 {
         }
 #   endif
 
+        lightingBuffersActive = (lighting != nullptr) && !lighting->empty();
         if (lighting != nullptr) {
             lighting->finish(worker, shaderUploads);
         }

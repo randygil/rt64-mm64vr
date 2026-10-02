@@ -20,6 +20,7 @@ Texture2D<float> gDepth : register(t2, space0);
 #endif
 Texture2D<float> gShadowMap : register(t3, space0);
 SamplerComparisonState gShadowSampler : register(s4, space0);
+Texture2D<float4> gNormalBuffer : register(t5, space0);
 
 float loadDepth(int2 pixel) {
 #ifdef MULTISAMPLING
@@ -55,11 +56,13 @@ float3 normalFromDepth(LightingParams params, int2 pixel, float depth, float3 po
     return normal;
 }
 
-float sampleShadow(LightingParams params, float3 position, float3 normal, float NdotL) {
+float sampleShadow(LightingParams params, float3 position, float3 normal, float NdotL, float foliageRadius) {
     // Move the position away from the surface to avoid self shadowing, more on surfaces at a grazing angle to the sun.
+    // Foliage is moved out of its own tree towards the sun, so the crossed cards don't shadow each other but other
+    // trees and objects still do.
     const float texelSize = params.shadowParams.x;
     const float slope = sqrt(saturate(1.0f - NdotL * NdotL));
-    const float3 offsetPosition = position + normal * (texelSize * params.shadowParams.z * (0.5f + slope));
+    const float3 offsetPosition = position + normal * (texelSize * params.shadowParams.z * (0.5f + slope)) + params.sunDirection.xyz * (foliageRadius * params.foliageParams.w);
     const float4 shadowPosition = mul(params.shadowMatrix, float4(offsetPosition, 1.0f));
     const float3 shadowNdc = shadowPosition.xyz / shadowPosition.w;
     const float2 shadowUV = shadowNdc.xy * float2(0.5f, -0.5f) + 0.5f;
@@ -100,7 +103,11 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION) : SV_TARGET {
     }
 
     const float3 position = lightingWorldPosition(params, pixelPosition.xy, depth);
-    const float3 normal = normalFromDepth(params, pixel, depth, position);
+    const float4 normalSample = gNormalBuffer.Load(int3(pixel, 0));
+    const bool storedNormal = (normalSample.w > 0.5f);
+    const float3 normal = storedNormal ? lightingDecodeNormal(normalSample.xy) : normalFromDepth(params, pixel, depth, position);
+    const float foliageRadius = storedNormal ? (normalSample.z * 4096.0f) : 0.0f;
+    const bool foliage = (foliageRadius > 0.0f);
     const float3 worldUp = params.worldUp.xyz;
 
     // Light from the sky above and the ground below.
@@ -112,14 +119,26 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION) : SV_TARGET {
     float shadow = 1.0f;
     if (params.sunDirection.w > 0.0f) {
         const float NdotL = dot(normal, params.sunDirection.xyz);
-        const float wrap = params.lightingParams.z;
+        const float wrap = foliage ? params.foliageParams.x : params.lightingParams.z;
         const float diffuse = saturate((NdotL + wrap) / (1.0f + wrap));
-        shadow = sampleShadow(params, position, normal, NdotL);
+        shadow = sampleShadow(params, position, normal, NdotL, foliageRadius);
+
+        // Leaves are never completely dark, as light goes through them and bounces inside the canopy.
+        if (foliage) {
+            shadow = lerp(params.foliageParams.z, 1.0f, shadow);
+        }
 
         // Surfaces facing away from the sun are already in shadow, so the shading from the normals is limited by the
         // strength set for it to keep the game's own shading readable.
         const float shading = lerp(1.0f, diffuse, params.lightingParams.w);
         sunLight = params.sunColor.rgb * (shading * shadow);
+
+        // Leaves glow when the sun is behind them.
+        if (foliage) {
+            const float3 viewDirection = normalize(position - params.cameraPosition.xyz);
+            const float transmission = pow(saturate(dot(viewDirection, params.sunDirection.xyz)), 4.0f);
+            sunLight += params.sunColor.rgb * (transmission * params.foliageParams.y * (0.35f + 0.65f * shadow));
+        }
     }
 
     // Light carried with the camera.

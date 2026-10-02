@@ -12,18 +12,33 @@
 #include "shaders/FullScreenVS.hlsl.spirv.h"
 #include "shaders/LightingComposePS.hlsl.spirv.h"
 #include "shaders/LightingComposePSMS.hlsl.spirv.h"
+#include "shaders/LightingGBufferVS.hlsl.spirv.h"
+#include "shaders/LightingGBufferPS.hlsl.spirv.h"
+#include "shaders/LightingGBufferPSMS.hlsl.spirv.h"
+#include "shaders/LightingGBufferFoliagePS.hlsl.spirv.h"
+#include "shaders/LightingGBufferFoliagePSMS.hlsl.spirv.h"
 #include "shaders/LightingShadowPS.hlsl.spirv.h"
 #include "shaders/LightingShadowVS.hlsl.spirv.h"
 #ifdef _WIN32
 #   include "shaders/FullScreenVS.hlsl.dxil.h"
 #   include "shaders/LightingComposePS.hlsl.dxil.h"
 #   include "shaders/LightingComposePSMS.hlsl.dxil.h"
+#   include "shaders/LightingGBufferVS.hlsl.dxil.h"
+#   include "shaders/LightingGBufferPS.hlsl.dxil.h"
+#   include "shaders/LightingGBufferPSMS.hlsl.dxil.h"
+#   include "shaders/LightingGBufferFoliagePS.hlsl.dxil.h"
+#   include "shaders/LightingGBufferFoliagePSMS.hlsl.dxil.h"
 #   include "shaders/LightingShadowPS.hlsl.dxil.h"
 #   include "shaders/LightingShadowVS.hlsl.dxil.h"
 #elif defined(__APPLE__)
 #   include "shaders/FullScreenVS.hlsl.metal.h"
 #   include "shaders/LightingComposePS.hlsl.metal.h"
 #   include "shaders/LightingComposePSMS.hlsl.metal.h"
+#   include "shaders/LightingGBufferVS.hlsl.metal.h"
+#   include "shaders/LightingGBufferPS.hlsl.metal.h"
+#   include "shaders/LightingGBufferPSMS.hlsl.metal.h"
+#   include "shaders/LightingGBufferFoliagePS.hlsl.metal.h"
+#   include "shaders/LightingGBufferFoliagePSMS.hlsl.metal.h"
 #   include "shaders/LightingShadowPS.hlsl.metal.h"
 #   include "shaders/LightingShadowVS.hlsl.metal.h"
 #endif
@@ -204,6 +219,50 @@ namespace RT64 {
 
             pipelineDesc.pixelShader = pixelShader.get();
             shadowAlphaPipeline = device->createGraphicsPipeline(pipelineDesc);
+
+            // The normal buffer is drawn with the same inputs as the raster shaders.
+            layoutBuilder.begin(false, true);
+            layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingGBufferCB), RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL);
+            layoutBuilder.addDescriptorSet(descriptorCommonSet);
+            layoutBuilder.addDescriptorSet(descriptorTextureSet);
+            layoutBuilder.addDescriptorSet(descriptorTextureSet);
+            layoutBuilder.addDescriptorSet(descriptorFramebufferSet);
+            layoutBuilder.end();
+            gbufferPipelineLayout = layoutBuilder.create(device);
+
+            // Foliage normals need the index of the primitive in the pixel shader, which requires geometry shader support.
+            foliageNormalsSupported = device->getCapabilities().geometryShader;
+
+            std::unique_ptr<RenderShader> gbufferVertexShader = device->createShader(LIGHTING_SHADER_INPUTS(LightingGBufferVS, "VSMain", shaderFormat));
+            std::unique_ptr<RenderShader> gbufferPixelShaders[2][2];
+            gbufferPixelShaders[0][0] = device->createShader(LIGHTING_SHADER_INPUTS(LightingGBufferPS, "PSMain", shaderFormat));
+            gbufferPixelShaders[0][1] = device->createShader(LIGHTING_SHADER_INPUTS(LightingGBufferPSMS, "PSMain", shaderFormat));
+            if (foliageNormalsSupported) {
+                gbufferPixelShaders[1][0] = device->createShader(LIGHTING_SHADER_INPUTS(LightingGBufferFoliagePS, "PSMain", shaderFormat));
+                gbufferPixelShaders[1][1] = device->createShader(LIGHTING_SHADER_INPUTS(LightingGBufferFoliagePSMS, "PSMain", shaderFormat));
+            }
+
+            RenderGraphicsPipelineDesc gbufferDesc;
+            gbufferDesc.pipelineLayout = gbufferPipelineLayout.get();
+            gbufferDesc.vertexShader = gbufferVertexShader.get();
+            gbufferDesc.inputSlots = InputSlots;
+            gbufferDesc.inputSlotsCount = uint32_t(std::size(InputSlots));
+            gbufferDesc.inputElements = InputElements;
+            gbufferDesc.inputElementsCount = uint32_t(std::size(InputElements));
+            gbufferDesc.primitiveTopology = RenderPrimitiveTopology::TRIANGLE_LIST;
+            gbufferDesc.cullMode = RenderCullMode::NONE;
+            gbufferDesc.depthClipEnabled = false;
+            gbufferDesc.renderTargetFormat[0] = RenderFormat::R16G16B16A16_UNORM;
+            gbufferDesc.renderTargetBlend[0] = RenderBlendDesc::Copy();
+            gbufferDesc.renderTargetCount = 1;
+            for (uint32_t foliage = 0; foliage < 2; foliage++) {
+                for (uint32_t multisampling = 0; multisampling < 2; multisampling++) {
+                    if (gbufferPixelShaders[foliage][multisampling] != nullptr) {
+                        gbufferDesc.pixelShader = gbufferPixelShaders[foliage][multisampling].get();
+                        gbufferPipelines[foliage][multisampling] = device->createGraphicsPipeline(gbufferDesc);
+                    }
+                }
+            }
         }
 
         // Composition of the lighting over the color target.
@@ -224,6 +283,7 @@ namespace RT64 {
     LightingRenderer::~LightingRenderer() { }
 
     void LightingRenderer::reset() {
+        gbufferEnabled = (enhancementValue("RT64_LIGHT_GBUFFER", 1.0f) > 0.0f);
         scenes.clear();
         casters.clear();
         paramsVector.clear();
@@ -236,6 +296,9 @@ namespace RT64 {
         scene.colorTarget = colorTarget;
         scene.depthTarget = depthTarget;
         scene.rect = RenderRect(INT32_MAX, INT32_MAX, INT32_MIN, INT32_MIN);
+        scene.viewport = desc.viewport;
+        scene.screenScale = desc.screenScale;
+        scene.screenOffset = desc.screenOffset;
 
         interop::LightingParams &params = scene.params;
         memset(&params, 0, sizeof(params));
@@ -315,6 +378,7 @@ namespace RT64 {
 
         params.fog = hlslpp::float4(desc.fogMul, desc.fogOffset, desc.fogEnabled ? 1.0f : 0.0f, 0.0f);
         params.lightingParams = hlslpp::float4(enhancementValue("RT64_LIGHT_STRENGTH", 1.0f), enhancementValue("RT64_LIGHT_EXPOSURE", 1.0f), enhancementValue("RT64_LIGHT_WRAP", 0.5f), enhancementValue("RT64_LIGHT_SHADING", 1.0f));
+        params.foliageParams = hlslpp::float4(enhancementValue("RT64_LIGHT_FOLIAGE_WRAP", 0.8f), enhancementValue("RT64_LIGHT_FOLIAGE_TRANSLUCENCY", 0.6f), enhancementValue("RT64_LIGHT_FOLIAGE_SHADOW", 0.35f), enhancementValue("RT64_LIGHT_FOLIAGE_SHADOW_OFFSET", 1.0f));
         params.settings.x = uint32_t(enhancementValue("RT64_LIGHT_DEBUG", 0.0f));
         params.settings.y = uint32_t(getRasterLightingQuality());
         params.settings.z = (depthTarget != nullptr) ? depthTarget->multisampling.sampleCount : 1;
@@ -341,6 +405,30 @@ namespace RT64 {
         casters.push_back({ instanceIndex, alphaTested });
     }
 
+    void LightingRenderer::addGBufferDraw(uint32_t sceneIndex, uint32_t instanceIndex, uint32_t flags) {
+        assert(sceneIndex < scenes.size());
+        if (!gbufferEnabled) {
+            return;
+        }
+
+        if (!foliageNormalsSupported) {
+            flags &= ~LIGHTING_GBUFFER_FOLIAGE;
+        }
+
+        scenes[sceneIndex].gbufferDraws.push_back({ instanceIndex, flags });
+    }
+
+    void LightingRenderer::createNormalBuffer(RenderWorker *worker, uint32_t width, uint32_t height) {
+        normalFramebuffer.reset();
+        normalBuffer.reset();
+        normalBuffer = device->createTexture(RenderTextureDesc::ColorTarget(width, height, RenderFormat::R16G16B16A16_UNORM));
+        normalBuffer->setName("Lighting Normal Buffer");
+        const RenderTexture *colorAttachment = normalBuffer.get();
+        normalFramebuffer = device->createFramebuffer(RenderFramebufferDesc(&colorAttachment, 1));
+        normalBufferWidth = width;
+        normalBufferHeight = height;
+    }
+
     void LightingRenderer::createShadowMap(RenderWorker *worker, uint32_t size) {
         shadowFramebuffer.reset();
         shadowMapView.reset();
@@ -363,6 +451,18 @@ namespace RT64 {
         const uint32_t mapSize = std::clamp(desiredSize, 256U, 8192U);
         if ((shadowMap == nullptr) || (shadowMapSize != mapSize)) {
             createShadowMap(worker, mapSize);
+        }
+
+        // The normal buffer covers the biggest color target of the frame.
+        uint32_t normalWidth = 1;
+        uint32_t normalHeight = 1;
+        for (const Scene &scene : scenes) {
+            normalWidth = std::max(normalWidth, scene.colorTarget->width);
+            normalHeight = std::max(normalHeight, scene.colorTarget->height);
+        }
+
+        if ((normalBuffer == nullptr) || (normalBufferWidth < normalWidth) || (normalBufferHeight < normalHeight)) {
+            createNormalBuffer(worker, std::max(normalWidth, normalBufferWidth), std::max(normalHeight, normalBufferHeight));
         }
 
         // The shadow map follows the first scene with a sun, usually the main view.
@@ -438,6 +538,7 @@ namespace RT64 {
             set->setBuffer(set->gLightingParams, paramsBuffer.get(), RenderBufferStructuredView(sizeof(interop::LightingParams)));
             set->setTexture(set->gDepth, scene.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ, scene.depthTarget->textureView.get());
             set->setTexture(set->gShadowMap, shadowMap.get(), RenderTextureLayout::DEPTH_READ, shadowMapView.get());
+            set->setTexture(set->gNormalBuffer, normalBuffer.get(), RenderTextureLayout::SHADER_READ);
         }
     }
 
@@ -478,7 +579,17 @@ namespace RT64 {
         interop::LightingShadowCB shadowCB;
         shadowCB.shadowMatrix = shadowMatrix;
         shadowCB.padding = { 0, 0, 0 };
+        // Opaque casters don't need their draw call parameters, so consecutive ranges of indices are drawn together.
         const RenderPipeline *previousPipeline = nullptr;
+        uint32_t pendingIndexStart = 0;
+        uint32_t pendingIndexCount = 0;
+        auto flushPending = [&]() {
+            if (pendingIndexCount > 0) {
+                worker->commandList->drawIndexedInstanced(pendingIndexCount, 1, pendingIndexStart, 0, 0);
+                pendingIndexCount = 0;
+            }
+        };
+
         for (const Caster &caster : casters) {
             const InstanceDrawCall &drawCall = instanceDrawCalls[caster.instanceIndex];
             if ((drawCall.type != InstanceDrawCall::Type::IndexedTriangles) || (drawCall.triangles.faceCount == 0)) {
@@ -486,6 +597,13 @@ namespace RT64 {
             }
 
             const RenderPipeline *pipeline = caster.alphaTested ? shadowAlphaPipeline.get() : shadowOpaquePipeline.get();
+            const uint32_t indexCount = drawCall.triangles.faceCount * 3;
+            if (!caster.alphaTested && (pipeline == previousPipeline) && (pendingIndexCount > 0) && ((pendingIndexStart + pendingIndexCount) == drawCall.triangles.indexStart)) {
+                pendingIndexCount += indexCount;
+                continue;
+            }
+
+            flushPending();
             if (pipeline != previousPipeline) {
                 worker->commandList->setPipeline(pipeline);
                 previousPipeline = pipeline;
@@ -493,11 +611,99 @@ namespace RT64 {
 
             shadowCB.renderIndex = caster.instanceIndex;
             worker->commandList->setGraphicsPushConstants(0, &shadowCB);
-            worker->commandList->drawIndexedInstanced(drawCall.triangles.faceCount * 3, 1, drawCall.triangles.indexStart, 0, 0);
+            if (caster.alphaTested) {
+                worker->commandList->drawIndexedInstanced(indexCount, 1, drawCall.triangles.indexStart, 0, 0);
+            }
+            else {
+                pendingIndexStart = drawCall.triangles.indexStart;
+                pendingIndexCount = indexCount;
+            }
         }
+
+        flushPending();
 
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, RenderTextureBarrier(shadowMap.get(), RenderTextureLayout::DEPTH_READ));
         shadowMapRendered = true;
+    }
+
+    void LightingRenderer::recordGBuffer(RenderWorker *worker, uint32_t sceneIndex, RenderDescriptorSet *commonSet, RenderDescriptorSet *textureSet, RenderDescriptorSet *framebufferSet,
+        const RenderVertexBufferView *vertexViews, const RenderInputSlot *inputSlots, uint32_t vertexViewCount, const RenderIndexBufferView *indexView,
+        const std::vector<InstanceDrawCall> &instanceDrawCalls)
+    {
+        assert(sceneIndex < scenes.size());
+        const Scene &scene = scenes[sceneIndex];
+        if (scene.rect.isEmpty() || (normalBuffer == nullptr)) {
+            return;
+        }
+
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(normalBuffer.get(), RenderTextureLayout::COLOR_WRITE));
+        worker->commandList->setFramebuffer(normalFramebuffer.get());
+        worker->commandList->clearColor(0, RenderColor(0.0f, 0.0f, 0.0f, 0.0f), &scene.rect, 1);
+        if (!scene.gbufferDraws.empty()) {
+            const bool multisampling = (scene.depthTarget->multisampling.sampleCount > 1);
+            worker->commandList->setViewports(scene.viewport);
+            worker->commandList->setScissors(scene.rect);
+            worker->commandList->setGraphicsPipelineLayout(gbufferPipelineLayout.get());
+            worker->commandList->setGraphicsDescriptorSet(commonSet, 0);
+            worker->commandList->setGraphicsDescriptorSet(textureSet, 1);
+            worker->commandList->setGraphicsDescriptorSet(textureSet, 2);
+            worker->commandList->setGraphicsDescriptorSet(framebufferSet, 3);
+            worker->commandList->setVertexBuffers(0, vertexViews, vertexViewCount, inputSlots);
+            worker->commandList->setIndexBuffer(indexView);
+
+            interop::LightingGBufferCB gbufferCB;
+            gbufferCB.cameraPosition = scene.params.cameraPosition;
+            gbufferCB.screenScale = scene.screenScale;
+            gbufferCB.screenOffset = scene.screenOffset;
+            gbufferCB.padding = 0;
+            // Draw calls without flags only need the vertices, so consecutive ranges of indices are drawn together.
+            const RenderPipeline *previousPipeline = nullptr;
+            uint32_t pendingIndexStart = 0;
+            uint32_t pendingIndexCount = 0;
+            auto flushPending = [&]() {
+                if (pendingIndexCount > 0) {
+                    worker->commandList->drawIndexedInstanced(pendingIndexCount, 1, pendingIndexStart, 0, 0);
+                    pendingIndexCount = 0;
+                }
+            };
+
+            for (const GBufferDraw &draw : scene.gbufferDraws) {
+                const InstanceDrawCall &drawCall = instanceDrawCalls[draw.instanceIndex];
+                if ((drawCall.type != InstanceDrawCall::Type::IndexedTriangles) || (drawCall.triangles.faceCount == 0)) {
+                    continue;
+                }
+
+                const bool foliage = (draw.flags & LIGHTING_GBUFFER_FOLIAGE) != 0;
+                const RenderPipeline *pipeline = gbufferPipelines[foliage ? 1 : 0][multisampling ? 1 : 0].get();
+                const uint32_t indexCount = drawCall.triangles.faceCount * 3;
+                if ((draw.flags == 0) && (pipeline == previousPipeline) && (pendingIndexCount > 0) && ((pendingIndexStart + pendingIndexCount) == drawCall.triangles.indexStart)) {
+                    pendingIndexCount += indexCount;
+                    continue;
+                }
+
+                flushPending();
+                if (pipeline != previousPipeline) {
+                    worker->commandList->setPipeline(pipeline);
+                    previousPipeline = pipeline;
+                }
+
+                gbufferCB.renderIndex = draw.instanceIndex;
+                gbufferCB.indexStart = drawCall.triangles.indexStart;
+                gbufferCB.flags = draw.flags;
+                worker->commandList->setGraphicsPushConstants(0, &gbufferCB);
+                if (draw.flags == 0) {
+                    pendingIndexStart = drawCall.triangles.indexStart;
+                    pendingIndexCount = indexCount;
+                }
+                else {
+                    worker->commandList->drawIndexedInstanced(indexCount, 1, drawCall.triangles.indexStart, 0, 0);
+                }
+            }
+
+            flushPending();
+        }
+
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(normalBuffer.get(), RenderTextureLayout::SHADER_READ));
     }
 
     LightingRenderer::ComposePipelines &LightingRenderer::getComposePipelines(const RenderMultisampling &multisampling, RenderFormat format) {

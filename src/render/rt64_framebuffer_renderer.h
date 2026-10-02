@@ -115,6 +115,8 @@ namespace RT64 {
         const ShaderLibrary *shaderLibrary = nullptr;
         std::unique_ptr<LightingRenderer> lighting;
         RenderBuffer *worldPosBuffer = nullptr;
+        RenderBuffer *worldNormBuffer = nullptr;
+        bool lightingBuffersActive = false;
 
 #   if RT_ENABLED
         const RenderTexture *blueNoiseTexture = nullptr;

@@ -388,7 +388,7 @@ namespace RT64 {
             }
 
             // The enhanced lighting draws the shadow casters with their positions in world space.
-            const bool lightingActive = isRasterLightingEnabled() && !workloadConfig.raytracingEnabled;
+            const bool lightingActive = isRasterLightingEnabled() && !workloadConfig.raytracingEnabled && (enhancementValue("RT64_LIGHT_ENABLE", 1.0f) > 0.0f);
             const bool processWorldVertices = prevFrame.matched || lightingActive;
             if (processWorldVertices) {
                 workload.resetWorldOutputBuffers();

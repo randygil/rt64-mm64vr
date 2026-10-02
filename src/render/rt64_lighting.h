@@ -39,6 +39,7 @@ namespace RT64 {
         uint32_t gDepth;
         uint32_t gShadowMap;
         uint32_t gShadowSampler;
+        uint32_t gNormalBuffer;
 
         LightingComposeDescriptorSet(const RenderSampler *shadowSampler, RenderDevice *device = nullptr) {
             builder.begin();
@@ -46,6 +47,7 @@ namespace RT64 {
             gDepth = builder.addTexture(2);
             gShadowMap = builder.addTexture(3);
             gShadowSampler = builder.addImmutableSampler(4, shadowSampler);
+            gNormalBuffer = builder.addTexture(5);
             builder.end();
 
             if (device != nullptr) {
@@ -77,12 +79,26 @@ namespace RT64 {
         bool fogEnabled = false;
         float fogMul = 0.0f;
         float fogOffset = 0.0f;
+
+        // Transformation applied by the raster vertex shader and its viewport, to draw the surfaces again.
+        interop::float2 screenScale;
+        interop::float2 screenOffset;
+        RenderViewport viewport;
     };
 
     struct LightingRenderer {
+        struct GBufferDraw {
+            uint32_t instanceIndex;
+            uint32_t flags;
+        };
+
         struct Scene {
             interop::LightingParams params;
             RenderRect rect;
+            RenderViewport viewport;
+            interop::float2 screenScale;
+            interop::float2 screenOffset;
+            std::vector<GBufferDraw> gbufferDraws;
             RenderTarget *colorTarget = nullptr;
             RenderTarget *depthTarget = nullptr;
             hlslpp::float3 cameraPosition;
@@ -115,6 +131,14 @@ namespace RT64 {
         std::unique_ptr<RenderPipelineLayout> shadowPipelineLayout;
         std::unique_ptr<RenderPipeline> shadowOpaquePipeline;
         std::unique_ptr<RenderPipeline> shadowAlphaPipeline;
+        std::unique_ptr<RenderPipelineLayout> gbufferPipelineLayout;
+        std::unique_ptr<RenderPipeline> gbufferPipelines[2][2];
+        std::unique_ptr<RenderTexture> normalBuffer;
+        std::unique_ptr<RenderFramebuffer> normalFramebuffer;
+        uint32_t normalBufferWidth = 0;
+        uint32_t normalBufferHeight = 0;
+        bool foliageNormalsSupported = false;
+        bool gbufferEnabled = true;
         std::unique_ptr<RenderPipelineLayout> composePipelineLayout;
         std::map<std::pair<uint32_t, RenderFormat>, ComposePipelines> composePipelines;
         std::unique_ptr<RenderTexture> shadowMap;
@@ -147,6 +171,9 @@ namespace RT64 {
         // Adds a draw call that casts shadows.
         void addCaster(uint32_t instanceIndex, bool alphaTested);
 
+        // Adds an opaque draw call of a scene to the normal buffer (flags are LIGHTING_GBUFFER_*).
+        void addGBufferDraw(uint32_t sceneIndex, uint32_t instanceIndex, uint32_t flags);
+
         // Fits the shadow map and finishes the parameters of the scenes. Adds the upload of the parameters to the list.
         void finish(RenderWorker *worker, std::vector<BufferUploader::Upload> &uploads);
 
@@ -158,6 +185,12 @@ namespace RT64 {
             const RenderVertexBufferView *vertexViews, const RenderInputSlot *inputSlots, uint32_t vertexViewCount, const RenderIndexBufferView *indexView,
             const std::vector<InstanceDrawCall> &instanceDrawCalls);
 
+        // Draws the normals of the opaque surfaces of a scene. The depth target must be readable (depth read layout), and
+        // the framebuffer set must be the one that binds it.
+        void recordGBuffer(RenderWorker *worker, uint32_t sceneIndex, RenderDescriptorSet *commonSet, RenderDescriptorSet *textureSet, RenderDescriptorSet *framebufferSet,
+            const RenderVertexBufferView *vertexViews, const RenderInputSlot *inputSlots, uint32_t vertexViewCount, const RenderIndexBufferView *indexView,
+            const std::vector<InstanceDrawCall> &instanceDrawCalls);
+
         // Lights the color target of a scene. The depth target must be readable (depth read layout).
         void recordCompose(RenderWorker *worker, uint32_t sceneIndex);
 
@@ -165,6 +198,7 @@ namespace RT64 {
 
     private:
         void createShadowMap(RenderWorker *worker, uint32_t size);
+        void createNormalBuffer(RenderWorker *worker, uint32_t width, uint32_t height);
         ComposePipelines &getComposePipelines(const RenderMultisampling &multisampling, RenderFormat format);
     };
 

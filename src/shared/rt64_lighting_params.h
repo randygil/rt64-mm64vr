@@ -10,6 +10,11 @@
 
 #include "shared/rt64_hlsl.h"
 
+// Flags of the draw calls drawn into the normal buffer.
+#define LIGHTING_GBUFFER_ALPHA_TESTED   0x1
+#define LIGHTING_GBUFFER_RSP_LIT        0x2
+#define LIGHTING_GBUFFER_FOLIAGE        0x4
+
 #ifdef HLSL_CPU
 namespace interop {
 #endif
@@ -64,6 +69,10 @@ namespace interop {
         // x overall strength, y exposure, z wrap of the sun's diffuse term, w strength of the shading from the normals.
         float4 lightingParams;
 
+        // Foliage: x wrap of the diffuse term, y light passing through the leaves, z darkest shadow, w distance the shadow
+        // lookups are moved towards the sun relative to the size of the tree.
+        float4 foliageParams;
+
         // x debug view, y quality level, z sample count of the depth buffer, w flags.
         uint4 settings;
     };
@@ -72,6 +81,16 @@ namespace interop {
         float4x4 shadowMatrix;
         uint renderIndex;
         uint3 padding;
+    };
+
+    struct LightingGBufferCB {
+        float4 cameraPosition;
+        float2 screenScale;
+        float2 screenOffset;
+        uint renderIndex;
+        uint indexStart;
+        uint flags;
+        uint padding;
     };
 
     struct LightingComposeCB {
