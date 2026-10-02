@@ -138,7 +138,75 @@ float4 sampleTextureNative(Texture2D texture, uint nativeSampler, int2 texelBase
     }
 }
 
-float4 sampleTextureLevel(const RDPTile rdpTile, const GPUTile gpuTile, bool filterBilerp, bool filterAverage, bool linearFiltering, float2 uvCoord, uint tlut, bool canDecodeTMEM, uint mipLevel, bool usesHDR) {
+float4 fetchTexel(const RDPTile rdpTile, const GPUTile gpuTile, float2 tcScale, int2 texel, uint tlut, bool gpuTileUsesTMEM, uint mipLevel) {
+    if ((rdpTile.nativeSampler == NATIVE_SAMPLER_NONE) || gpuTileUsesTMEM) {
+        return clampWrapMirrorSample(rdpTile, gpuTile, tcScale, texel, tlut, gpuTileUsesTMEM, mipLevel);
+    }
+    else {
+        Texture2D texture = gTextures[NonUniformResourceIndex(gpuTile.textureIndex)];
+        return sampleTextureNative(texture, rdpTile.nativeSampler, texel, gpuTile.textureDimensions.xy);
+    }
+}
+
+void catmullRomWeights(float t, out float4 w) {
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    w.x = -0.5f * t3 + t2 - 0.5f * t;
+    w.y = 1.5f * t3 - 2.5f * t2 + 1.0f;
+    w.z = -1.5f * t3 + 2.0f * t2 + 0.5f * t;
+    w.w = 0.5f * t3 - 0.5f * t2;
+}
+
+void bSplineWeights(float t, out float4 w) {
+    const float t2 = t * t;
+    const float t3 = t2 * t;
+    const float s = 1.0f - t;
+    w.x = s * s * s / 6.0f;
+    w.y = (3.0f * t3 - 6.0f * t2 + 4.0f) / 6.0f;
+    w.z = (-3.0f * t3 + 3.0f * t2 + 3.0f * t + 1.0f) / 6.0f;
+    w.w = t3 / 6.0f;
+}
+
+// Bicubic filter used when a low resolution texture is magnified so it looks smooth instead of blocky. The color uses
+// a sharp kernel clamped to the texels around it so it doesn't ring, while the alpha uses a smoother one so the edges
+// of cutouts like leaves become curves instead of following the texel grid.
+float4 sampleTextureBicubic(const RDPTile rdpTile, const GPUTile gpuTile, float2 tcScale, float2 uvCoord, uint tlut, bool gpuTileUsesTMEM, uint mipLevel) {
+    const int2 texelBaseInt = floor(uvCoord);
+    const float2 fracPart = uvCoord - texelBaseInt;
+    float4 wx, wy, sx, sy;
+    catmullRomWeights(fracPart.x, wx);
+    catmullRomWeights(fracPart.y, wy);
+    bSplineWeights(fracPart.x, sx);
+    bSplineWeights(fracPart.y, sy);
+    float4 result = 0.0f;
+    float smoothAlpha = 0.0f;
+    float4 nearMin = 1e9f;
+    float4 nearMax = -1e9f;
+    [unroll]
+    for (int y = 0; y < 4; y++) {
+        float4 row = 0.0f;
+        float rowAlpha = 0.0f;
+        [unroll]
+        for (int x = 0; x < 4; x++) {
+            const float4 texel = fetchTexel(rdpTile, gpuTile, tcScale, texelBaseInt + int2(x - 1, y - 1), tlut, gpuTileUsesTMEM, mipLevel);
+            row += texel * wx[x];
+            rowAlpha += texel.a * sx[x];
+            if ((x == 1 || x == 2) && (y == 1 || y == 2)) {
+                nearMin = min(nearMin, texel);
+                nearMax = max(nearMax, texel);
+            }
+        }
+
+        result += row * wy[y];
+        smoothAlpha += rowAlpha * sy[y];
+    }
+
+    result = clamp(result, nearMin, nearMax);
+    result.a = clamp(lerp(result.a, smoothAlpha, 0.7f), nearMin.a, nearMax.a);
+    return result;
+}
+
+float4 sampleTextureLevel(const RDPTile rdpTile, const GPUTile gpuTile, bool filterBilerp, bool filterAverage, bool linearFiltering, float2 uvCoord, uint tlut, bool canDecodeTMEM, uint mipLevel, bool usesHDR, bool smoothMagnify) {
     float2 tcScale = gpuTile.tcScale;
     float mipScale = float(1U << mipLevel);
     uvCoord /= mipScale;
@@ -146,6 +214,10 @@ float4 sampleTextureLevel(const RDPTile rdpTile, const GPUTile gpuTile, bool fil
     
     int2 texelBaseInt = floor(uvCoord);
     bool filtering = or(filterBilerp, linearFiltering);
+    if (smoothMagnify && filtering) {
+        return sampleTextureBicubic(rdpTile, gpuTile, tcScale, uvCoord, tlut, canDecodeTMEM && gpuTileFlagRawTMEM(gpuTile.flags), mipLevel);
+    }
+
     float4 samples[4];
     const uint nativeSampler = rdpTile.nativeSampler;
     bool gpuTileUsesTMEM = canDecodeTMEM && gpuTileFlagRawTMEM(gpuTile.flags);
@@ -213,7 +285,7 @@ float4 sampleTextureLevel(const RDPTile rdpTile, const GPUTile gpuTile, bool fil
     }
 }
 
-float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputUV, float2 ddxUVx, float2 ddyUVy, const RDPTile rdpTile, const GPUTile gpuTile, bool nextPixelBug) {
+float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputUV, float2 ddxUVx, float2 ddyUVy, const RDPTile rdpTile, const GPUTile gpuTile, bool nextPixelBug, bool smoothMagnify = false) {
     const bool texturePerspective = (otherMode.textPersp() == G_TP_PERSP);
     const bool applyCorrection = (!texturePerspective && !renderFlagRect(renderFlags));
 
@@ -258,6 +330,15 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
     }
 #endif
     
+    // Only low resolution textures that cover more than a pixel per texel are smoothed. Rays without differentials
+    // (the bounces) don't need it.
+    if (smoothMagnify) {
+        const float2 ddxTexels = ddxUVx * gpuTile.tcScale;
+        const float2 ddyTexels = ddyUVy * gpuTile.tcScale;
+        const float footprint = max(dot(ddxTexels, ddxTexels), dot(ddyTexels, ddyTexels));
+        smoothMagnify = !linearFiltering && !gpuTileFlagHighRes(gpuTile.flags) && (footprint < 1.0f) && (footprint > 1e-10f);
+    }
+
     const uint tlut = otherMode.textLUT();
     const bool canDecodeTMEM = renderFlagCanDecodeTMEM(renderFlags);
     const bool usesHDR = renderFlagUsesHDR(renderFlags);
@@ -325,13 +406,13 @@ float4 sampleTexture(OtherMode otherMode, RenderFlags renderFlags, float2 inputU
 #if USE_FOR_LOOPS
     [unroll]
     for (uint i = 0; i < numRDPSamples; i++) {
-        textureSamples[i] = sampleTextureLevel(rdpTile, gpuTile, filterBilerp, filterAverage, linearFiltering, uvCoord, tlut, canDecodeTMEM, RDPMipLevels[i], usesHDR);
+        textureSamples[i] = sampleTextureLevel(rdpTile, gpuTile, filterBilerp, filterAverage, linearFiltering, uvCoord, tlut, canDecodeTMEM, RDPMipLevels[i], usesHDR, smoothMagnify);
     }
 #else
-    textureSamples[0] = sampleTextureLevel(rdpTile, gpuTile, filterBilerp, filterAverage, linearFiltering, uvCoord, tlut, canDecodeTMEM, RDPMipLevels[0], usesHDR);
+    textureSamples[0] = sampleTextureLevel(rdpTile, gpuTile, filterBilerp, filterAverage, linearFiltering, uvCoord, tlut, canDecodeTMEM, RDPMipLevels[0], usesHDR, smoothMagnify);
     
     if (numRDPSamples > 1) {
-        textureSamples[1] = sampleTextureLevel(rdpTile, gpuTile, filterBilerp, filterAverage, linearFiltering, uvCoord, tlut, canDecodeTMEM, RDPMipLevels[1], usesHDR);
+        textureSamples[1] = sampleTextureLevel(rdpTile, gpuTile, filterBilerp, filterAverage, linearFiltering, uvCoord, tlut, canDecodeTMEM, RDPMipLevels[1], usesHDR, smoothMagnify);
     }
 #endif
 

@@ -15,7 +15,7 @@ struct TextureCB {
 
 [[vk::push_constant]] ConstantBuffer<TextureCB> gConstants : register(b0);
 Texture2D<float4> gInput : register(t1);
-RWTexture2D<float4> gOutput : register(u2);
+[[vk::image_format("rgba16f")]] RWTexture2D<float4> gOutput : register(u2);
 SamplerState gSampler : register(s3);
 
 [numthreads(BLOCK_SIZE, BLOCK_SIZE, 1)]

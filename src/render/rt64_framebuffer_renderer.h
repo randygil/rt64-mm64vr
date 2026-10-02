@@ -30,6 +30,19 @@
 #endif
 
 namespace RT64 {
+    // Overall intensity of the path tracer's visual enhancements (ambient occlusion, light scattering, bloom,
+    // sharpening, color grading, vignette and texture relief), from 0 (none) to 1 (full).
+    void setEnhancementIntensity(float intensity);
+
+    // Whether the sky of outdoor scenes is replaced by a procedural sky with an atmosphere and volumetric clouds.
+    void setProceduralSkyEnabled(bool enabled);
+
+#if RT_ENABLED
+    // Value of a visual enhancement of the path tracer, which can be overridden with an environment variable of the
+    // same name or the tuning file RT64_RT_TUNING_FILE. Safe to call from any thread.
+    float enhancementValue(const char *name, float defaultValue);
+#endif
+
     struct DynamicTextureView {
         const RenderTexture *texture = nullptr;
         uint32_t dstIndex = 0;
@@ -56,6 +69,7 @@ namespace RT64 {
     struct RSPSmoothNormalGenerationCB {
         uint32_t indexStart;
         uint32_t indexCount;
+        float creaseCosine;
     };
 
     struct FramebufferRenderer {
@@ -108,6 +122,8 @@ namespace RT64 {
         const RaytracingState *rtState = nullptr;
         const RenderPipelineLayout *rtPipelineLayout = nullptr;
         std::unique_ptr<RaytracingResources> rtResources;
+        std::vector<RenderBuffer *> rtInputBuffers;
+        uint32_t rtFramebufferIndex = 0;
         bool rtSupport = false;
 #   endif
 

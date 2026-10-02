@@ -226,6 +226,14 @@ namespace RT64 {
         FramebufferStorage fbStorage;
         uint32_t viOriginalRate;
         hlslpp::uint2 viFbSize = {};
+
+        // Direction pointing up in the world, in the space the geometry is drawn in. Zero if unknown.
+        hlslpp::float3 worldUp = { 0.0f, 0.0f, 0.0f };
+        hlslpp::float3 worldRight = { 1.0f, 0.0f, 0.0f };
+        hlslpp::float3 worldForward = { 0.0f, 0.0f, 1.0f };
+
+        // Position of the world origin in the space the geometry is drawn in. W is 1 if it's known.
+        hlslpp::float4 worldOrigin = { 0.0f, 0.0f, 0.0f, 0.0f };
         DebuggerRenderer debuggerRenderer;
         DebuggerCamera debuggerCamera;
         std::multimap<uint32_t, uint32_t> transformIdMap;

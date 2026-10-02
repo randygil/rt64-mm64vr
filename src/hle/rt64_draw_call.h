@@ -99,6 +99,10 @@ namespace RT64 {
 
         // RSP specific parameters.
         uint32_t geometryMode;
+
+        // Whether the last vertices loaded were lit by the RSP. Games can disable the lighting after loading the
+        // vertices, so the geometry mode of the draw call doesn't tell it.
+        bool rspLit;
         uint32_t objRenderMode;
 
         // GBI specific parameters.

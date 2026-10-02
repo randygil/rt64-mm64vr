@@ -129,8 +129,16 @@ namespace RT64 {
         // Detect refresh rate from the display the window is located at.
         appWindow->detectRefreshRate();
 
-        // Resolve the graphics API option in case it's automatic.
+        // Resolve the graphics API option in case it's automatic. The path tracer is only stable on Vulkan for now, so
+        // it's preferred when the host asks for it.
         chosenGraphicsAPI = UserConfiguration::resolveGraphicsAPI(userConfig.graphicsAPI);
+#   if RT_ENABLED
+        const char *raytracingEnv = getenv("RT64_RAYTRACING");
+        const bool raytracingRequested = (raytracingEnv != nullptr) && (atoi(raytracingEnv) != 0);
+        if ((raytracingPreferred || raytracingRequested) && (userConfig.graphicsAPI == UserConfiguration::GraphicsAPI::Automatic) && (chosenGraphicsAPI == UserConfiguration::GraphicsAPI::D3D12)) {
+            chosenGraphicsAPI = UserConfiguration::GraphicsAPI::Vulkan;
+        }
+#   endif
 
 #   ifdef _WIN64
         // Windows can try falling back to the other API option in case of failure.
@@ -419,6 +427,13 @@ namespace RT64 {
 #   endif
         workloadQueue->setup(workloadExt);
 
+        // Allows starting with the path tracer enabled without going through the developer shortcuts.
+#   if RT_ENABLED
+        if (raytracingRequested) {
+            setRaytracingEnabled(true);
+        }
+#   endif
+
         PresentQueue::External presentExt;
         presentExt.appWindow = appWindow.get();
         presentExt.device = device.get();
@@ -465,6 +480,28 @@ namespace RT64 {
     }
 
     Application::~Application() {}
+
+    void Application::setSunRequiresSkyBackground(bool enabled) {
+        state->sunRequiresSkyBackground = enabled;
+    }
+
+    void Application::setSceneKey(uint32_t key) {
+        state->sceneKey = key;
+    }
+
+    void Application::setWorldViewRotation(const float *rotation) {
+        state->worldViewRotationValid = (rotation != nullptr);
+        if (rotation != nullptr) {
+            memcpy(state->worldViewRotation, rotation, sizeof(state->worldViewRotation));
+        }
+    }
+
+    void Application::setWorldViewTranslation(const float *translation) {
+        state->worldViewTranslationValid = (translation != nullptr);
+        if (translation != nullptr) {
+            memcpy(state->worldViewTranslation, translation, sizeof(state->worldViewTranslation));
+        }
+    }
 
     void Application::processDisplayLists(uint8_t *memory, uint32_t dlStartAddress, uint32_t dlEndAddress, bool isHLE) {
         if (state->debuggerInspector.paused) {
@@ -593,6 +630,30 @@ namespace RT64 {
     }
 #endif
 
+    bool Application::isRaytracingSupported() const {
+#   if RT_ENABLED
+        // The D3D12 backend hangs the GPU when dispatching rays (under investigation), so it can only be enabled explicitly.
+        static const bool d3d12Allowed = (getenv("RT64_RT_D3D12") != nullptr);
+        if ((chosenGraphicsAPI == UserConfiguration::GraphicsAPI::D3D12) && !d3d12Allowed) {
+            return false;
+        }
+
+        return (rtShaderCache != nullptr);
+#   else
+        return false;
+#   endif
+    }
+
+    bool Application::isRaytracingEnabled() const {
+        return (workloadQueue != nullptr) && workloadQueue->rtEnabled;
+    }
+
+    void Application::setRaytracingEnabled(bool enabled) {
+        if (workloadQueue != nullptr) {
+            workloadQueue->rtEnabled = enabled && isRaytracingSupported();
+        }
+    }
+
     bool Application::sdlEventFilter(SDL_Event *event) {
         if (userConfig.developerMode && (presentQueue != nullptr) && (state != nullptr) && !FileDialog::isOpen) {
             const std::lock_guard lock(presentQueue->inspectorMutex);
@@ -652,7 +713,7 @@ namespace RT64 {
             break;
         }
         case DeveloperShortcut::RayTracing: {
-            workloadQueue->rtEnabled = !workloadQueue->rtEnabled;
+            setRaytracingEnabled(!isRaytracingEnabled());
             break;
         }
         case DeveloperShortcut::ViewRDRAM: {

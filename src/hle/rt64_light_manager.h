@@ -28,7 +28,7 @@ namespace RT64 {
         void processDirLight(State *state, const uint8_t lightIndex);
         void processAmbientLight(State *state, const uint8_t lightIndex);
         void processLight(State *state, const uint8_t lightIndex, bool pointLightingEnabled);
-        interop::PointLight estimatedSunLight(const float sunIntensity, const float sunDistance) const;
+        interop::PointLight estimatedSunLight(const float sunIntensity, const float sunDistance, const float worldUpSign, const bool useGameLightDirection, const float azimuthDegrees, const float elevationDegrees, const float *worldViewRotation) const;
         hlslpp::float3 estimatedAmbientLight(const float ambientIntensity) const;
     };
 };

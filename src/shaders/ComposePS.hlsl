@@ -16,22 +16,18 @@ Texture2D<float4> gRefraction : register(t6);
 Texture2D<float4> gTransparent : register(t7);
 
 float4 PSMain(in float4 pos : SV_Position, in float2 uv : TEXCOORD0) : SV_TARGET {
+    // The diffuse buffer stores the average albedo of the lit surfaces and their coverage of the pixel. The rest of the
+    // buffers are already in sRGB space and were weighted by their own coverage.
     float4 diffuse = gDiffuse.SampleLevel(gSampler, uv, 0);
+    float3 directLight = gDirectLight.SampleLevel(gSampler, uv, 0).rgb;
+    float3 indirectLight = gIndirectLight.SampleLevel(gSampler, uv, 0).rgb;
+    float3 reflection = gReflection.SampleLevel(gSampler, uv, 0).rgb;
+    float3 refraction = gRefraction.SampleLevel(gSampler, uv, 0).rgb;
+    float3 transparent = gTransparent.SampleLevel(gSampler, uv, 0).rgb;
+    float3 result = transparent + reflection + refraction;
     if (diffuse.a > EPSILON) {
-        float3 directLight = gDirectLight.SampleLevel(gSampler, uv, 0).rgb;
-        float3 indirectLight = gIndirectLight.SampleLevel(gSampler, uv, 0).rgb;
-        float3 reflection = gReflection.SampleLevel(gSampler, uv, 0).rgb;
-        float3 refraction = gRefraction.SampleLevel(gSampler, uv, 0).rgb;
-        float3 transparent = gTransparent.SampleLevel(gSampler, uv, 0).rgb;
+        result += LinearToSrgb(max(diffuse.rgb * (directLight + indirectLight), 0.0f)) * diffuse.a;
+    }
 
-        // We intentionally mix the HDR buffer that will be upscaled in sRGB space to preserve the color of effects like fog and such.
-        float3 result = lerp(LinearToSrgb(diffuse.rgb), LinearToSrgb(diffuse.rgb * (directLight + indirectLight)), diffuse.a);
-        result += reflection;
-        result += refraction;
-        result += transparent;
-        return float4(result, 1.0f);
-    }
-    else {
-        return LinearToSrgb(float4(diffuse.rgb, 1.0f));
-    }
+    return float4(result, 1.0f);
 }

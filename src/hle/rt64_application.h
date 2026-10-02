@@ -114,6 +114,9 @@ namespace RT64 {
         EnhancementConfiguration enhancementConfig;
         ApplicationConfiguration appConfig;
         UserConfiguration::GraphicsAPI chosenGraphicsAPI;
+
+        // Set by the host before setup to prefer a graphics API that supports the path tracer.
+        bool raytracingPreferred = false;
         bool freeCamClearQueued;
         UserPaths userPaths;
         std::unique_ptr<Interpreter> interpreter;
@@ -160,6 +163,19 @@ namespace RT64 {
         Application(const Core &core, const ApplicationConfiguration &appConfig);
         virtual ~Application();
         SetupResult setup(uint32_t threadId);
+        // Games that bake the camera into their model matrices can provide the rotation of the camera so world space
+        // effects like the sun stay fixed in the world. Pass nullptr to clear it.
+        void setWorldViewRotation(const float *rotation);
+
+        // Translation of the world origin in the space the geometry is drawn in, applied after the rotation, which
+        // tells where the camera is in the world. Null if unknown.
+        void setWorldViewTranslation(const float *translation);
+
+        // Leaves the sun out of frames that don't draw a textured background behind the 3D scene (see State).
+        void setSunRequiresSkyBackground(bool enabled);
+
+        // Identifies the scene (e.g. the area of the game) so it's remembered as an exterior once it draws a sky.
+        void setSceneKey(uint32_t key);
         void processDisplayLists(uint8_t *memory, uint32_t dlStartAddress, uint32_t dlEndAddress, bool isHLE);
         void updateScreen();
         void destroyShaderCache();
@@ -174,6 +190,9 @@ namespace RT64 {
         bool sdlEventFilter(SDL_Event *event) override;
         bool usesWindowMessageFilter() override;
         void processDeveloperShortcut(DeveloperShortcut developerShortcut);
+        bool isRaytracingSupported() const;
+        bool isRaytracingEnabled() const;
+        void setRaytracingEnabled(bool enabled);
         void updateUserConfig(bool discardFBs);
         void updateEmulatorConfig();
         void updateEnhancementConfig();

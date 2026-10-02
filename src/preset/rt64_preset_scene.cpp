@@ -12,15 +12,18 @@ namespace RT64 {
     PresetScene::PresetScene() {
         estimateAmbientLight = true;
         ambientLightIntensity = 0.03f;
-        ambientBaseColor = { 0.03f, 0.03f, 0.03f };
-        ambientNoGIColor = { 0.03f, 0.03f, 0.03f };
+        // N64 games already have most of their lighting baked into the vertex colors, so the ambient light is much stronger
+        // than what a physically based scene would use to avoid making areas without direct light too dark.
+        ambientBaseColor = { 0.35f, 0.35f, 0.35f };
+        ambientNoGIColor = { 0.2f, 0.2f, 0.2f };
         eyeLightDiffuseColor = { 0.008f, 0.008f, 0.008f };
         eyeLightSpecularColor = { 0.004f, 0.004f, 0.004f };
         giDiffuseStrength = 1.5f;
         giBackgroundStrength = 0.5f;
-        tonemapExposure = 0.35f;
+        tonemapExposure = 0.3f;
         tonemapWhite = 1.05f;
         tonemapBlack = 0.0f;
+        // The exposure is fixed (tonemapExposure / minLuminance = 1) so the background keeps its original brightness.
         minLuminance = 0.3f;
         luminanceRange = 0.0f;
         lumaUpdateTime = 1.1f;

@@ -13,6 +13,14 @@ option(RT64_STATIC "Build RT64 as a static library" OFF)
 
 option(RT64_SDL_WINDOW_VULKAN "Build RT64 to expect an SDL Window outside of Windows" OFF)
 
+if (APPLE OR ANDROID)
+    set(RT64_RAYTRACING_DEFAULT OFF)
+else()
+    set(RT64_RAYTRACING_DEFAULT ON)
+endif()
+
+option(RT64_RAYTRACING "Build RT64 with the path traced renderer" ${RT64_RAYTRACING_DEFAULT})
+
 if (NOT ${RT64_STATIC})
     set(CMAKE_POSITION_INDEPENDENT_CODE ON)
 endif()
@@ -428,6 +436,13 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/contrib/miniz/miniz.c"
 )
 
+if (RT64_RAYTRACING)
+    list(APPEND SOURCES
+        "${PROJECT_SOURCE_DIR}/src/render/rt64_raytracing_resources.cpp"
+        "${PROJECT_SOURCE_DIR}/src/render/rt64_raytracing_shader_cache.cpp"
+    )
+endif()
+
 include_directories(
     "${SDL2_INCLUDE_DIRS}"
     "${PROJECT_SOURCE_DIR}/src"
@@ -452,6 +467,10 @@ endif()
 
 set_target_properties(rt64 PROPERTIES OUTPUT_NAME "rt64")
 set_target_properties(rt64 PROPERTIES PREFIX "")
+
+if (RT64_RAYTRACING)
+    target_compile_definitions(rt64 PUBLIC RT_ENABLED=1)
+endif()
 
 # Add common libraries.
 target_link_libraries(rt64 re-spirv)
@@ -533,6 +552,8 @@ build_compute_shader(rt64 "src/shaders/FbWriteColorCS.hlsl" "src/shaders/FbWrite
 build_compute_shader(rt64 "src/shaders/FbWriteDepthCS.hlsl")
 build_compute_shader(rt64 "src/shaders/FbWriteDepthCS.hlsl" "src/shaders/FbWriteDepthCSMS.hlsl" "-D MULTISAMPLING")
 build_compute_shader(rt64 "src/shaders/GaussianFilterRGB3x3CS.hlsl")
+build_compute_shader(rt64 "src/shaders/TemporalAACS.hlsl")
+build_compute_shader(rt64 "src/shaders/BloomCS.hlsl")
 build_compute_shader(rt64 "src/shaders/BoxFilterCS.hlsl")
 build_compute_shader(rt64 "src/shaders/BicubicScalingCS.hlsl")
 build_compute_shader(rt64 "src/shaders/HistogramAverageCS.hlsl")
@@ -570,6 +591,21 @@ build_pixel_shader(  rt64 "src/shaders/ComposePS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/DebugPS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/Im3DPS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/PostProcessPS.hlsl")
+
+if (RT64_RAYTRACING)
+    build_ray_shader(rt64 "src/shaders/RaytracingLibrary.hlsl")
+
+    # These shaders read the path tracer's parameters from the shared headers, so they must be rebuilt whenever any
+    # of them changes or they would read the parameters with an outdated layout.
+    file(GLOB RT64_RAYTRACING_SHADER_DEPENDS "${PROJECT_SOURCE_DIR}/src/shaders/*.hlsli" "${PROJECT_SOURCE_DIR}/src/shared/*.h")
+    foreach(RT64_DEPENDENT_SHADER RaytracingLibrary PostProcessPS DebugPS Im3DPS Im3DVS)
+        set(RT64_DEPENDENT_SHADER_OUTPUT "${CMAKE_BINARY_DIR}/src/shaders/${RT64_DEPENDENT_SHADER}.hlsl")
+        add_custom_command(OUTPUT "${RT64_DEPENDENT_SHADER_OUTPUT}.spv" APPEND DEPENDS ${RT64_RAYTRACING_SHADER_DEPENDS})
+        if (WIN32)
+            add_custom_command(OUTPUT "${RT64_DEPENDENT_SHADER_OUTPUT}.dxil" APPEND DEPENDS ${RT64_RAYTRACING_SHADER_DEPENDS})
+        endif()
+    endforeach()
+endif()
 
 target_include_directories(rt64 PRIVATE ${CMAKE_BINARY_DIR}/src)
 

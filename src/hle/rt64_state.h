@@ -4,6 +4,8 @@
 
 #pragma once
 
+#include <unordered_set>
+
 #include "xxHash/xxh3.h"
 
 #include "common/rt64_emulator_configuration.h"
@@ -92,6 +94,24 @@ namespace RT64 {
         std::vector<DisplayList *> returnAddressStack;
         std::vector<Framebuffer *> differentFbs;
         GameConfiguration gameConfig;
+
+        // Rotation from a world with the Y axis pointing up to the space the game draws its geometry in, for games
+        // that include the camera in their model matrices. Row major, applied as rotation * vector.
+        bool worldViewRotationValid = false;
+        float worldViewRotation[9] = {};
+        bool worldViewTranslationValid = false;
+        float worldViewTranslation[3] = {};
+
+        // Games that draw their sky as a 2D picture before the 3D scene can ask for the sun to be left out of frames
+        // that don't draw one, which are usually interiors and dungeons without a ceiling the sun could leak through.
+        bool sunRequiresSkyBackground = false;
+
+        // The sky isn't drawn when the camera looks down, so a scene is remembered as an exterior once it shows one.
+        // The game can identify its scenes (e.g. the current area) with a key; without one, the sun is only left out
+        // after several frames in a row without a sky.
+        uint32_t sceneKey = UINT32_MAX;
+        std::unordered_set<uint32_t> exteriorSceneKeys;
+        uint32_t framesWithoutSky = 0;
         uint32_t displayListAddress;
         uint64_t displayListCounter;
         bool rdramCheckPending;

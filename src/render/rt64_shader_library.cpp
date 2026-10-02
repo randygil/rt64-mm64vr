@@ -18,6 +18,8 @@
 #include "shaders/FbWriteDepthCS.hlsl.spirv.h"
 #include "shaders/FbWriteDepthCSMS.hlsl.spirv.h"
 #include "shaders/GaussianFilterRGB3x3CS.hlsl.spirv.h"
+#include "shaders/TemporalAACS.hlsl.spirv.h"
+#include "shaders/BloomCS.hlsl.spirv.h"
 #include "shaders/BoxFilterCS.hlsl.spirv.h"
 #include "shaders/BicubicScalingCS.hlsl.spirv.h"
 #include "shaders/HistogramAverageCS.hlsl.spirv.h"
@@ -64,6 +66,8 @@
 #   include "shaders/FbWriteDepthCS.hlsl.dxil.h"
 #   include "shaders/FbWriteDepthCSMS.hlsl.dxil.h"
 #   include "shaders/GaussianFilterRGB3x3CS.hlsl.dxil.h"
+#   include "shaders/TemporalAACS.hlsl.dxil.h"
+#   include "shaders/BloomCS.hlsl.dxil.h"
 #   include "shaders/BoxFilterCS.hlsl.dxil.h"
 #   include "shaders/BicubicScalingCS.hlsl.dxil.h"
 #   include "shaders/HistogramAverageCS.hlsl.dxil.h"
@@ -109,6 +113,8 @@
 #   include "shaders/FbWriteDepthCS.hlsl.metal.h"
 #   include "shaders/FbWriteDepthCSMS.hlsl.metal.h"
 #   include "shaders/GaussianFilterRGB3x3CS.hlsl.metal.h"
+#   include "shaders/TemporalAACS.hlsl.metal.h"
+#   include "shaders/BloomCS.hlsl.metal.h"
 #   include "shaders/BoxFilterCS.hlsl.metal.h"
 #   include "shaders/BicubicScalingCS.hlsl.metal.h"
 #   include "shaders/HistogramAverageCS.hlsl.metal.h"
@@ -438,6 +444,34 @@ namespace RT64 {
             gaussianFilterRGB3x3.pipeline = device->createComputePipeline(pipelineDesc);
         }
 
+        // Temporal anti-aliasing.
+        {
+            TemporalAADescriptorSet descriptorSet(samplerLibrary);
+            layoutBuilder.begin();
+            layoutBuilder.addPushConstant(0, 0, sizeof(uint32_t) * 6, RenderShaderStageFlag::COMPUTE);
+            layoutBuilder.addDescriptorSet(descriptorSet);
+            layoutBuilder.end();
+            temporalAA.pipelineLayout = layoutBuilder.create(device);
+
+            std::unique_ptr<RenderShader> computeShader = device->createShader(CREATE_SHADER_INPUTS(TemporalAACSBlobDXIL, TemporalAACSBlobSPIRV, TemporalAACSBlobMSL, "CSMain", shaderFormat));
+            RenderComputePipelineDesc pipelineDesc(temporalAA.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
+            temporalAA.pipeline = device->createComputePipeline(pipelineDesc);
+        }
+
+        // Bloom.
+        {
+            BloomDescriptorSet descriptorSet(samplerLibrary);
+            layoutBuilder.begin();
+            layoutBuilder.addPushConstant(0, 0, sizeof(uint32_t) * 6, RenderShaderStageFlag::COMPUTE);
+            layoutBuilder.addDescriptorSet(descriptorSet);
+            layoutBuilder.end();
+            bloom.pipelineLayout = layoutBuilder.create(device);
+
+            std::unique_ptr<RenderShader> computeShader = device->createShader(CREATE_SHADER_INPUTS(BloomCSBlobDXIL, BloomCSBlobSPIRV, BloomCSBlobMSL, "CSMain", shaderFormat));
+            RenderComputePipelineDesc pipelineDesc(bloom.pipelineLayout.get(), computeShader.get(), 8, 8, 1);
+            bloom.pipeline = device->createComputePipeline(pipelineDesc);
+        }
+
         // Histogram average.
         {
             HistogramAverageDescriptorSet descriptorSet;
@@ -525,7 +559,7 @@ namespace RT64 {
         {
             RSPSmoothNormalDescriptorSet descriptorSet;
             layoutBuilder.begin();
-            layoutBuilder.addPushConstant(0, 0, sizeof(uint32_t) * 2, RenderShaderStageFlag::COMPUTE);
+            layoutBuilder.addPushConstant(0, 0, sizeof(uint32_t) * 3, RenderShaderStageFlag::COMPUTE);
             layoutBuilder.addDescriptorSet(descriptorSet);
             layoutBuilder.end();
             rspSmoothNormal.pipelineLayout = layoutBuilder.create(device);

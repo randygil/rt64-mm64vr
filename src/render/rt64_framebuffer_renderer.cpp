@@ -4,6 +4,14 @@
 
 #include "rt64_framebuffer_renderer.h"
 
+#include <algorithm>
+#include <atomic>
+#include <chrono>
+#include <filesystem>
+#include <fstream>
+#include <mutex>
+#include <unordered_map>
+
 #include "../include/rt64_extended_gbi.h"
 
 #include "common/rt64_elapsed_timer.h"
@@ -47,10 +55,130 @@ namespace interop {
         uint2 TextureSize;
         float2 TexelSize;
     };
+
+    struct TemporalAACB {
+        uint2 TextureSize;
+        float2 TexelSize;
+        float BlendFactor;
+        uint Reset;
+    };
+
+    struct BloomCB {
+        uint2 OutputSize;
+        float2 InputTexelSize;
+        uint Mode;
+        float Threshold;
+    };
 };
 
 namespace RT64 {
     // Helper functions.
+
+    static std::atomic<float> enhancementIntensity = 1.0f;
+
+    void setEnhancementIntensity(float intensity) {
+        enhancementIntensity = std::clamp(intensity, 0.0f, 1.0f);
+    }
+
+    static std::atomic<bool> proceduralSkyEnabled = true;
+
+#if RT_ENABLED
+    // Same single scattering model the sky shader uses, so the bounces can use a few precomputed colors of the sky
+    // instead of evaluating it for every ray.
+    static hlslpp::float3 atmosphereScattering(hlslpp::float3 direction, hlslpp::float3 sunDirection) {
+        const float PlanetRadius = 6371e3f;
+        const float AtmosphereRadius = 6471e3f;
+        const hlslpp::float3 RayleighCoefficient = { 5.5e-6f, 13.0e-6f, 22.4e-6f };
+        const float MieCoefficient = 21e-6f;
+        const float RayleighHeight = 8e3f;
+        const float MieHeight = 1.2e3f;
+        const float MieAnisotropy = 0.758f;
+        const int PrimarySteps = 16;
+        const int LightSteps = 8;
+        auto sphereExit = [](hlslpp::float3 origin, hlslpp::float3 dir, float radius) {
+            const float b = float(hlslpp::dot(dir, origin));
+            const float c = float(hlslpp::dot(origin, origin)) - radius * radius;
+            const float d = b * b - c;
+            return (d < 0.0f) ? 0.0f : (-b + sqrtf(d));
+        };
+
+        const hlslpp::float3 origin = { 0.0f, PlanetRadius + 200.0f, 0.0f };
+        const float stepSize = sphereExit(origin, direction, AtmosphereRadius) / float(PrimarySteps);
+        hlslpp::float3 totalRayleigh = { 0.0f, 0.0f, 0.0f };
+        hlslpp::float3 totalMie = { 0.0f, 0.0f, 0.0f };
+        float depthRayleigh = 0.0f;
+        float depthMie = 0.0f;
+        for (int i = 0; i < PrimarySteps; i++) {
+            const hlslpp::float3 position = origin + direction * (stepSize * (float(i) + 0.5f));
+            const float height = float(hlslpp::length(position)) - PlanetRadius;
+            const float stepRayleigh = expf(-height / RayleighHeight) * stepSize;
+            const float stepMie = expf(-height / MieHeight) * stepSize;
+            depthRayleigh += stepRayleigh;
+            depthMie += stepMie;
+
+            const float lightStepSize = sphereExit(position, sunDirection, AtmosphereRadius) / float(LightSteps);
+            float lightRayleigh = 0.0f;
+            float lightMie = 0.0f;
+            for (int j = 0; j < LightSteps; j++) {
+                const hlslpp::float3 lightPosition = position + sunDirection * (lightStepSize * (float(j) + 0.5f));
+                const float lightHeight = std::max(float(hlslpp::length(lightPosition)) - PlanetRadius, 0.0f);
+                lightRayleigh += expf(-lightHeight / RayleighHeight) * lightStepSize;
+                lightMie += expf(-lightHeight / MieHeight) * lightStepSize;
+            }
+
+            const hlslpp::float3 opticalDepth = RayleighCoefficient * (depthRayleigh + lightRayleigh) + MieCoefficient * (depthMie + lightMie);
+            const hlslpp::float3 attenuation = { expf(-float(opticalDepth.x)), expf(-float(opticalDepth.y)), expf(-float(opticalDepth.z)) };
+            totalRayleigh += attenuation * stepRayleigh;
+            totalMie += attenuation * stepMie;
+        }
+
+        const float Pi = 3.14159265f;
+        const float mu = float(hlslpp::dot(direction, sunDirection));
+        const float g2 = MieAnisotropy * MieAnisotropy;
+        const float phaseRayleigh = 3.0f / (16.0f * Pi) * (1.0f + mu * mu);
+        const float phaseMie = 3.0f / (8.0f * Pi) * ((1.0f - g2) * (mu * mu + 1.0f)) / (powf(std::max(1.0f + g2 - 2.0f * mu * MieAnisotropy, 1e-6f), 1.5f) * (2.0f + g2));
+        return (RayleighCoefficient * totalRayleigh * phaseRayleigh + totalMie * (MieCoefficient * phaseMie)) * 22.0f;
+    }
+#endif
+
+    void setProceduralSkyEnabled(bool enabled) {
+        proceduralSkyEnabled = enabled;
+    }
+
+#if RT_ENABLED
+    // Values of the visual enhancements. They can be overridden with environment variables or with the file pointed
+    // by RT64_RT_TUNING_FILE, which uses one "NAME value" pair per line and is reloaded whenever it changes.
+    float enhancementValue(const char *name, float defaultValue) {
+        static std::mutex tuningMutex;
+        std::scoped_lock lock(tuningMutex);
+        static std::unordered_map<std::string, float> tuningValues;
+        static std::filesystem::file_time_type tuningTime;
+        static uint32_t tuningCheckCounter = 0;
+        static const char *tuningPath = getenv("RT64_RT_TUNING_FILE");
+        if ((tuningPath != nullptr) && ((tuningCheckCounter++ % 256) == 0)) {
+            std::error_code ec;
+            const auto writeTime = std::filesystem::last_write_time(tuningPath, ec);
+            if (!ec && (writeTime != tuningTime)) {
+                tuningTime = writeTime;
+                tuningValues.clear();
+                std::ifstream tuningStream(tuningPath);
+                std::string key;
+                float value;
+                while (tuningStream >> key >> value) {
+                    tuningValues[key] = value;
+                }
+            }
+        }
+
+        auto it = tuningValues.find(name);
+        if (it != tuningValues.end()) {
+            return it->second;
+        }
+
+        const char *value = getenv(name);
+        return (value != nullptr) ? float(atof(value)) : defaultValue;
+    }
+#endif
     
     RenderRect convertFixedRect(FixedRect rect, hlslpp::float2 resScale, int32_t fbWidth, float aspectRatioScale, float extOriginPercentage, int32_t horizontalMisalignment, uint16_t leftOrigin, uint16_t rightOrigin) {
         if (!rect.isNull()) {
@@ -323,6 +451,18 @@ namespace RT64 {
 
 #   if RT_ENABLED
         if (raytracingEnabled) {
+            // The barrier interface requires mutable buffers even though they're only read from.
+            const RenderBuffer *inputBuffers[] = {
+                outputBuffers->worldPosBuffer.buffer.get(), outputBuffers->worldNormBuffer.buffer.get(), outputBuffers->worldVelBuffer.buffer.get(),
+                outputBuffers->genTexCoordBuffer.buffer.get(), outputBuffers->shadedColBuffer.buffer.get(), drawBuffers->fogIndicesBuffer.get(),
+                drawBuffers->lightIndicesBuffer.get(), drawBuffers->lightCountsBuffer.get(), drawBuffers->faceIndicesBuffer.get()
+            };
+
+            rtInputBuffers.clear();
+            for (const RenderBuffer *buffer : inputBuffers) {
+                rtInputBuffers.emplace_back(const_cast<RenderBuffer *>(buffer));
+            }
+
             descCommonSet->setBuffer(descCommonSet->posBuffer, outputBuffers->worldPosBuffer.buffer.get(), outputBuffers->worldPosBuffer.allocatedSize);
             descCommonSet->setBuffer(descCommonSet->normBuffer, outputBuffers->worldNormBuffer.buffer.get(), outputBuffers->worldNormBuffer.allocatedSize);
             descCommonSet->setBuffer(descCommonSet->velBuffer, outputBuffers->worldVelBuffer.buffer.get(), outputBuffers->worldVelBuffer.allocatedSize);
@@ -672,6 +812,11 @@ namespace RT64 {
             const int phaseCount = upscaler->getJitterPhaseCount(rtResources->textureWidth, rtScene.screenWidth);
             rtParams.pixelJitter = HaltonJitter(frameParams.frameCount, phaseCount);
         }
+        else if (rtResources->antialiasingEnabled) {
+            // The temporal anti-aliasing accumulates the samples of a jittered sequence.
+            const int AntialiasingPhaseCount = 8;
+            rtParams.pixelJitter = HaltonJitter(frameParams.frameCount, AntialiasingPhaseCount);
+        }
         else {
             rtParams.pixelJitter = { 0.0f, 0.0f };
         }
@@ -692,6 +837,122 @@ namespace RT64 {
         rtParams.tonemapWhite = preset.tonemapWhite;
         rtParams.tonemapBlack = preset.tonemapBlack;
 
+        // Visual enhancements on top of the path tracer.
+        rtParams.aoRadius = enhancementValue("RT64_RT_AO_RADIUS", 120.0f);
+        rtParams.aoStrength = enhancementValue("RT64_RT_AO_STRENGTH", 0.85f);
+        rtParams.volumetricStrength = enhancementValue("RT64_RT_VOLUMETRIC", 0.12f);
+        rtParams.volumetricDistance = enhancementValue("RT64_RT_VOLUMETRIC_DISTANCE", 4000.0f);
+        rtParams.sunDiscStrength = enhancementValue("RT64_RT_SUN_DISC", 6.0f);
+        rtParams.bloomStrength = enhancementValue("RT64_RT_BLOOM", 0.18f);
+        rtParams.bloomThreshold = enhancementValue("RT64_RT_BLOOM_THRESHOLD", 0.8f);
+        rtParams.sharpenStrength = enhancementValue("RT64_RT_SHARPEN", 0.35f);
+        rtParams.vignetteStrength = enhancementValue("RT64_RT_VIGNETTE", 0.22f);
+        rtParams.saturation = enhancementValue("RT64_RT_SATURATION", 1.1f);
+        rtParams.contrast = enhancementValue("RT64_RT_CONTRAST", 1.06f);
+        rtParams.directHistoryLength = enhancementValue("RT64_RT_DIRECT_HISTORY", 3.0f);
+        rtParams.blobShadowRemoval = enhancementValue("RT64_RT_BLOB_SHADOW_REMOVAL", 1.0f);
+        rtParams.volumetricAnisotropy = enhancementValue("RT64_RT_VOLUMETRIC_ANISOTROPY", 0.25f);
+        rtParams.volumetricMaxPhase = enhancementValue("RT64_RT_VOLUMETRIC_MAX_PHASE", 2.0f);
+        rtParams.bumpStrength = enhancementValue("RT64_RT_BUMP", 3.5f);
+        rtParams.waterReflection = enhancementValue("RT64_RT_WATER_REFLECTION", 0.15f);
+        rtParams.emissiveStrength = enhancementValue("RT64_RT_EMISSIVE", 1.5f);
+        rtParams.emissiveThreshold = enhancementValue("RT64_RT_EMISSIVE_THRESHOLD", 0.45f);
+
+        // The user's choice of how strong the enhancements look.
+        const float intensity = enhancementIntensity;
+        rtParams.aoStrength *= intensity;
+        rtParams.volumetricStrength *= intensity;
+        rtParams.sunDiscStrength *= intensity;
+        rtParams.bloomStrength *= intensity;
+        rtParams.sharpenStrength *= intensity;
+        rtParams.vignetteStrength *= intensity;
+        rtParams.saturation = 1.0f + (rtParams.saturation - 1.0f) * intensity;
+        rtParams.contrast = 1.0f + (rtParams.contrast - 1.0f) * intensity;
+        rtParams.bumpStrength *= intensity;
+        const hlslpp::float3 worldUpDir = hlslpp::normalize(rtScene.worldUp);
+        rtParams.worldUp = hlslpp::float4(worldUpDir.x, worldUpDir.y, worldUpDir.z, 0.0f);
+
+        // Orthonormal basis of the world for the sky, which is defined with Y pointing up.
+        hlslpp::float3 worldRightDir = rtScene.worldRight - worldUpDir * float(hlslpp::dot(rtScene.worldRight, worldUpDir));
+        if (float(hlslpp::dot(worldRightDir, worldRightDir)) < 1e-6f) {
+            worldRightDir = (fabsf(float(worldUpDir.x)) < 0.9f) ? hlslpp::float3(1.0f, 0.0f, 0.0f) : hlslpp::float3(0.0f, 0.0f, 1.0f);
+            worldRightDir = worldRightDir - worldUpDir * float(hlslpp::dot(worldRightDir, worldUpDir));
+        }
+
+        worldRightDir = hlslpp::normalize(worldRightDir);
+        hlslpp::float3 worldForwardDir = hlslpp::cross(worldRightDir, worldUpDir);
+        if (float(hlslpp::dot(worldForwardDir, rtScene.worldForward)) < 0.0f) {
+            worldForwardDir = -worldForwardDir;
+        }
+
+        rtParams.worldRight = hlslpp::float4(worldRightDir.x, worldRightDir.y, worldRightDir.z, 0.0f);
+        rtParams.worldForward = hlslpp::float4(worldForwardDir.x, worldForwardDir.y, worldForwardDir.z, 0.0f);
+        rtParams.worldOrigin = rtScene.worldOrigin;
+
+        // Procedural sky that replaces the sky of the game's background.
+        static const auto skyStartTime = std::chrono::steady_clock::now();
+        const float skySeconds = std::chrono::duration<float>(std::chrono::steady_clock::now() - skyStartTime).count();
+        rtParams.skyMode = proceduralSkyEnabled ? enhancementValue("RT64_RT_SKY", 1.0f) : 0.0f;
+        rtParams.skyExposure = enhancementValue("RT64_RT_SKY_EXPOSURE", 1.0f);
+        rtParams.skySaturation = enhancementValue("RT64_RT_SKY_SATURATION", 1.25f);
+        rtParams.cloudCoverage = enhancementValue("RT64_RT_CLOUD_COVERAGE", 0.5f);
+        rtParams.cloudDensity = enhancementValue("RT64_RT_CLOUD_DENSITY", 3.0f);
+        rtParams.cloudScale = enhancementValue("RT64_RT_CLOUD_SCALE", 1.0f);
+        rtParams.skyTime = fmodf(skySeconds * enhancementValue("RT64_RT_CLOUD_SPEED", 1.0f), 20000.0f);
+        rtParams.skyGI = enhancementValue("RT64_RT_SKY_GI", 0.5f);
+        rtParams.cloudHeight = enhancementValue("RT64_RT_CLOUD_HEIGHT", 30000.0f);
+        rtParams.cloudShadows = enhancementValue("RT64_RT_CLOUD_SHADOWS", 0.5f) * intensity;
+        rtParams.spriteVolume = enhancementValue("RT64_RT_SPRITE_VOLUME", 0.9f) * intensity;
+        rtParams.foliageWind = enhancementValue("RT64_RT_FOLIAGE_WIND", 0.8f) * intensity;
+        rtParams.foliageDetail = enhancementValue("RT64_RT_FOLIAGE_DETAIL", 1.0f) * intensity;
+        rtParams.textureSmoothing = (intensity > 0.0f) ? enhancementValue("RT64_RT_TEXTURE_SMOOTHING", 1.0f) : 0.0f;
+        rtParams.skyTint = hlslpp::float4(enhancementValue("RT64_RT_SKY_TINT_R", 0.8f), enhancementValue("RT64_RT_SKY_TINT_G", 0.9f), enhancementValue("RT64_RT_SKY_TINT_B", 1.15f), 0.0f);
+
+        // The sun is the light placed much further away than anything else in the scene.
+        rtParams.sunDirection = { 0.0f, 0.0f, 0.0f, 0.0f };
+        rtParams.sunColor = { 0.0f, 0.0f, 0.0f, 0.0f };
+        for (uint32_t i = 0; i < rtScene.lightCount; i++) {
+            const interop::PointLight &light = rtScene.pointLights[i];
+            const float distance = sqrtf(light.position.x * light.position.x + light.position.y * light.position.y + light.position.z * light.position.z);
+            if (distance > 1e6f) {
+                rtParams.sunDirection = hlslpp::float4(light.position.x / distance, light.position.y / distance, light.position.z / distance, 1.0f);
+                // Only the tint of the sun is used by the sky and the scattering, so they don't change with its intensity.
+                const float maxComponent = std::max(std::max(light.diffuseColor.x, light.diffuseColor.y), std::max(light.diffuseColor.z, 1e-6f));
+                rtParams.sunColor = hlslpp::float4(light.diffuseColor.x / maxComponent, light.diffuseColor.y / maxComponent, light.diffuseColor.z / maxComponent, 0.0f);
+                break;
+            }
+        }
+
+        // Colors of the procedural sky for the bounces: overhead, and at the horizon towards and away from the sun.
+        if ((rtParams.sunDirection.w != 0.0f) && (rtParams.skyMode > 0.0f)) {
+            const hlslpp::float3 sunRT = hlslpp::float3(rtParams.sunDirection.x, rtParams.sunDirection.y, rtParams.sunDirection.z);
+            hlslpp::float3 sunSky = { float(hlslpp::dot(sunRT, worldRightDir)), float(hlslpp::dot(sunRT, worldUpDir)), float(hlslpp::dot(sunRT, worldForwardDir)) };
+            sunSky = hlslpp::normalize(sunSky);
+            hlslpp::float3 sunHorizontal = { float(sunSky.x), 0.0f, float(sunSky.z) };
+            sunHorizontal = (float(hlslpp::length(sunHorizontal)) > 1e-4f) ? hlslpp::normalize(sunHorizontal) : hlslpp::float3(1.0f, 0.0f, 0.0f);
+            const hlslpp::float3 towardsSun = hlslpp::normalize(sunHorizontal + hlslpp::float3(0.0f, 0.08f, 0.0f));
+            const hlslpp::float3 awayFromSun = hlslpp::normalize(-sunHorizontal + hlslpp::float3(0.0f, 0.08f, 0.0f));
+            auto skyColor = [&](hlslpp::float3 direction) {
+                hlslpp::float3 color = atmosphereScattering(direction, sunSky) * rtParams.skyExposure;
+                const float luma = float(color.x) * 0.2126f + float(color.y) * 0.7152f + float(color.z) * 0.0722f;
+                color = hlslpp::float3(luma, luma, luma) + (color - hlslpp::float3(luma, luma, luma)) * rtParams.skySaturation;
+                color = hlslpp::max(color, hlslpp::float3(0.0f, 0.0f, 0.0f)) * hlslpp::float3(float(rtParams.skyTint.x), float(rtParams.skyTint.y), float(rtParams.skyTint.z));
+                return hlslpp::float4(color.x, color.y, color.z, 0.0f);
+            };
+
+            rtParams.skyZenithColor = skyColor(hlslpp::float3(0.0f, 1.0f, 0.0f));
+            rtParams.skyHorizonSunColor = skyColor(towardsSun);
+            rtParams.skyHorizonAwayColor = skyColor(awayFromSun);
+        }
+
+        // Without a sun (interiors) the ambient light is the only light left, so it's raised to keep the brightness
+        // the textures and vertex colors were made for. Outdoors it makes up for the low sun lighting the ground at a
+        // grazing angle.
+        const bool sunFound = (rtParams.sunDirection.w != 0.0f);
+        const float ambientScale = sunFound ? enhancementValue("RT64_RT_OUTDOOR_AMBIENT", 1.1f) : enhancementValue("RT64_RT_INDOOR_AMBIENT", 1.5f);
+        rtParams.ambientBaseColor = rtParams.ambientBaseColor * hlslpp::float4(ambientScale, ambientScale, ambientScale, 0.0f);
+        rtParams.ambientNoGIColor = rtParams.ambientNoGIColor * hlslpp::float4(ambientScale, ambientScale, ambientScale, 0.0f);
+
         const auto &proj = rtScene.curProjMatrix;
         rtParams.fovRadians = fovFromProj(proj);
         rtParams.nearDist = nearPlaneFromProj(proj);
@@ -710,6 +971,21 @@ namespace RT64 {
         }
 
         rtParams.view = rtScene.curViewMatrix;
+        static const bool printView = (getenv("RT64_RT_PRINT_VIEW") != nullptr);
+        static bool lastHadSun = false;
+        if (printView && ((rtParams.sunDirection.w != 0.0f) != lastHadSun)) {
+            lastHadSun = (rtParams.sunDirection.w != 0.0f);
+            fprintf(stderr, "RT sun %s at frame %u\n", lastHadSun ? "on" : "off", frameParams.frameCount);
+        }
+
+        if (printView && ((frameParams.frameCount % 60) == 0)) {
+            const auto &v = rtScene.curViewMatrix;
+            fprintf(stderr, "RT view: [%.3f %.3f %.3f] [%.3f %.3f %.3f] [%.3f %.3f %.3f] t=[%.1f %.1f %.1f] sun=[%.3f %.3f %.3f]\n",
+                v[0][0], v[0][1], v[0][2], v[1][0], v[1][1], v[1][2], v[2][0], v[2][1], v[2][2], v[3][0], v[3][1], v[3][2],
+                rtParams.sunDirection.x, rtParams.sunDirection.y, rtParams.sunDirection.z);
+            const auto &pm = rtScene.curProjMatrix;
+            fprintf(stderr, "RT proj: %.3f %.3f %.3f %.3f | %.3f %.3f\n", pm[0][0], pm[1][1], pm[2][2], pm[2][3], pm[3][2], pm[3][3]);
+        }
         rtParams.projection = rtScene.curProjMatrix;
 
         rtParams.viewI = hlslpp::inverse(rtParams.view);
@@ -737,21 +1013,13 @@ namespace RT64 {
         rtParams.cameraW = hlslpp::float4(cameraW, 0.0f);
 
         // Enable light reprojection if denoising is enabled.
-#   ifdef DI_REPROJECTION_SUPPORT
-        globalParamsBufferData.diReproject = !rtResources->skipReprojection && denoiserEnabled && (globalParamsBufferData.diSamples > 0) && (rtResources->upscalerMode != UpscaleMode::DLSS) ? 1 : 0;
-#   else
-        rtParams.diReproject = 0;
-#   endif
+        rtParams.diReproject = !rtResources->skipReprojection && rtResources->denoiserEnabled && (rtResources->upscalerMode != UpscaleMode::DLSS) ? 1 : 0;
 
         rtParams.giReproject = !rtResources->skipReprojection && rtResources->denoiserEnabled && (rtParams.giSamples > 0) && (rtResources->upscalerMode != UpscaleMode::DLSS) ? 1 : 0;
         rtParams.binaryLockMask = (rtResources->upscalerMode != UpscaleMode::FSR);
         rtParams.interleavedRastersCount = interleavedRastersCount;
         
-        Framebuffer &framebuffer = framebufferVector[framebufferCount - 1];
-        RenderDescriptorSet *descRealDepthSet = framebuffer.descRealFbSet->get();
-        RenderDescriptorSet *descriptorSets[] = { descCommonSet->get(), descTextureSet->get(), descTextureSet->get(), descRealDepthSet };
         rtResources->updateTopLevelASResources(worker, instanceDrawCallVector, rtScene.instanceIndices);
-        rtResources->createShaderBindingTable(worker, rtState, descriptorSets, uint32_t(std::size(descriptorSets)), hitGroupVector);
         rtResources->updateLightsBuffer(worker, rtScene);
     }
     
@@ -801,18 +1069,38 @@ namespace RT64 {
 
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, preDispatchBarriers, uint32_t(std::size(preDispatchBarriers)));
         
+        // The vertex data is read by the raytracing shaders.
+        thread_local std::vector<RenderBufferBarrier> inputBarriers;
+        inputBarriers.clear();
+        for (RenderBuffer *buffer : rtInputBuffers) {
+            if (buffer != nullptr) {
+                inputBarriers.emplace_back(buffer, RenderBufferAccess::READ);
+            }
+        }
+
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, inputBarriers);
+
+        // Debugging aid: RT64_RT_PASSES is a mask of the ray generation passes that are dispatched
+        // (1 primary, 2 direct, 4 indirect, 8 reflection, 16 refraction).
+        static const uint32_t passMask = (getenv("RT64_RT_PASSES") != nullptr) ? uint32_t(strtoul(getenv("RT64_RT_PASSES"), nullptr, 0)) : 0xFFU;
+        auto traceRaysPass = [&](uint32_t rayGenIndex) {
+            if (passMask & (1U << rayGenIndex)) {
+                rtResources->shaderBindingTableInfo.groups.rayGen.startIndex = rayGenIndex;
+                worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
+            }
+        };
+
         // Bind pipeline and dispatch primary rays.
         RT64_LOG_PRINTF("Dispatching primary rays");
-        Framebuffer &framebuffer = framebufferVector[framebufferCount - 1];
+        Framebuffer &framebuffer = framebufferVector[rtFramebufferIndex];
         RenderDescriptorSet *descRealFbSet = framebuffer.descRealFbSet->get();
-        rtResources->shaderBindingTableInfo.groups.rayGen.startIndex = 0;
         worker->commandList->setPipeline(rtState->pipeline.get());
         worker->commandList->setRaytracingPipelineLayout(rtPipelineLayout);
         worker->commandList->setRaytracingDescriptorSet(descCommonSet->get(), 0);
         worker->commandList->setRaytracingDescriptorSet(descTextureSet->get(), 1);
         worker->commandList->setRaytracingDescriptorSet(descTextureSet->get(), 2);
         worker->commandList->setRaytracingDescriptorSet(descRealFbSet, 3);
-        worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
+        traceRaysPass(0);
 
         // Barriers for shading buffers before dispatching secondary rays.
         RenderTextureBarrier shadingBarriers[] = {
@@ -830,13 +1118,11 @@ namespace RT64 {
 
         // Dispatch rays for direct light.
         RT64_LOG_PRINTF("Dispatching direct light rays");
-        rtResources->shaderBindingTableInfo.groups.rayGen.startIndex = 1;
-        worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
+        traceRaysPass(1);
 
         // Dispatch rays for indirect light.
         RT64_LOG_PRINTF("Dispatching indirect light rays");
-        rtResources->shaderBindingTableInfo.groups.rayGen.startIndex = 2;
-        worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
+        traceRaysPass(2);
 
         // Wait until indirect light is done before dispatching reflection or refraction rays.
         // TODO: This is only required to prevent simultaneous usage of the anyhit buffers.
@@ -845,8 +1131,7 @@ namespace RT64 {
 
         // Dispatch rays for refraction.
         RT64_LOG_PRINTF("Dispatching refraction rays");
-        rtResources->shaderBindingTableInfo.groups.rayGen.startIndex = 4;
-        worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
+        traceRaysPass(4);
 
         // Wait until refraction is done before dispatching reflection rays.
         // TODO: This is only required to prevent simultaneous usage of the anyhit buffers.
@@ -858,8 +1143,7 @@ namespace RT64 {
         while (reflections > 0) {
             // Dispatch rays for reflection.
             RT64_LOG_PRINTF("Dispatching reflection rays");
-            rtResources->shaderBindingTableInfo.groups.rayGen.startIndex = 3;
-            worker->commandList->traceRays(rtResources->textureWidth, rtResources->textureHeight, 1, rtResources->shaderBindingTableBuffer->at(0), rtResources->shaderBindingTableInfo.groups);
+            traceRaysPass(3);
             reflections--;
 
             // Add a barrier to wait for the input UAVs to be finished if there's more passes left to be done.
@@ -874,6 +1158,13 @@ namespace RT64 {
                 worker->commandList->barriers(RenderBarrierStage::COMPUTE, newInputBarriers, uint32_t(std::size(newInputBarriers)));
             }
         }
+
+        // Restore the vertex data to the state expected by the rasterizer.
+        for (RenderBufferBarrier &barrier : inputBarriers) {
+            barrier.accessBits = RenderBufferAccess::READ;
+        }
+
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, inputBarriers);
 
         // Copy direct light raw buffer to the first direct filtered buffer.
         {
@@ -987,6 +1278,31 @@ namespace RT64 {
 
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, afterComposeBarriers, uint32_t(std::size(afterComposeBarriers)));
 
+        // Temporal anti-aliasing.
+        Upscaler *activeUpscaler = rtResources->getUpscaler(rtResources->upscalerMode);
+        if (rtResources->antialiasingEnabled && !(rtResources->upscaleActive && (activeUpscaler != nullptr))) {
+            const uint32_t pairIndex = rtResources->swapBuffers ? 1 : 0;
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
+                RenderTextureBarrier(rtResources->antialiasedTexture[pairIndex].get(), RenderTextureLayout::GENERAL),
+                RenderTextureBarrier(rtResources->antialiasedTexture[pairIndex ^ 1].get(), RenderTextureLayout::SHADER_READ)
+            });
+
+            interop::TemporalAACB aaCB;
+            aaCB.TextureSize = { rtResources->textureWidth, rtResources->textureHeight };
+            aaCB.TexelSize = { 1.0f / rtResources->textureWidth, 1.0f / rtResources->textureHeight };
+            aaCB.BlendFactor = 0.1f;
+            aaCB.Reset = rtResources->skipReprojection ? 1 : 0;
+
+            const uint32_t ThreadGroupWorkCount = 8;
+            const ShaderRecord &temporalAA = shaderLibrary->temporalAA;
+            worker->commandList->setPipeline(temporalAA.pipeline.get());
+            worker->commandList->setComputePipelineLayout(temporalAA.pipelineLayout.get());
+            worker->commandList->setComputePushConstants(0, &aaCB);
+            worker->commandList->setComputeDescriptorSet(rtResources->antialiasingSets[pairIndex]->get(), 0);
+            worker->commandList->dispatch((rtResources->textureWidth + ThreadGroupWorkCount - 1) / ThreadGroupWorkCount, (rtResources->textureHeight + ThreadGroupWorkCount - 1) / ThreadGroupWorkCount, 1);
+            worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(rtResources->antialiasedTexture[pairIndex].get(), RenderTextureLayout::SHADER_READ));
+        }
+
         const bool lumaActive = rtScene.presetScene.luminanceRange > 0.0f;
         if (lumaActive) {
             const uint32_t ThreadGroupWorkRegionDim = 8;
@@ -1009,7 +1325,7 @@ namespace RT64 {
             }
 
 
-            worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderTextureBarrier(rtResources->downscaledOutputTexture.get(), RenderTextureLayout::GENERAL));
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(rtResources->lumaHistogramBuffer.get(), RenderBufferAccess::READ | RenderBufferAccess::WRITE), RenderTextureBarrier(rtResources->downscaledOutputTexture.get(), RenderTextureLayout::SHADER_READ));
 
             RT64_LOG_PRINTF("Do the luminance histogram shader");
             {
@@ -1029,7 +1345,7 @@ namespace RT64 {
                 worker->commandList->dispatch(dispatchX, dispatchY, 1);
             }
 
-            worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderTextureBarrier(rtResources->downscaledOutputTexture.get(), RenderTextureLayout::SHADER_READ));
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(rtResources->lumaHistogramBuffer.get(), RenderBufferAccess::READ));
 
             RT64_LOG_PRINTF("Do the luminance average shader");
             {
@@ -1053,6 +1369,7 @@ namespace RT64 {
             RT64_LOG_PRINTF("Do the histogram clear shader");
             {
                 // Execute the compute shader for clearing the luminance histogram.
+                worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(rtResources->lumaHistogramBuffer.get(), RenderBufferAccess::READ | RenderBufferAccess::WRITE));
                 const ShaderRecord &histogramClear = shaderLibrary->histogramClear;
                 worker->commandList->setPipeline(histogramClear.pipeline.get());
                 worker->commandList->setComputePipelineLayout(histogramClear.pipelineLayout.get());
@@ -1120,6 +1437,55 @@ namespace RT64 {
             worker->commandList->barriers(RenderBarrierStage::GRAPHICS, afterBarriers);
         }
 
+        // Bloom of the bright parts of the image.
+        RenderTexture *bloom0 = rtResources->bloomTexture[0].get();
+        RenderTexture *bloom1 = rtResources->bloomTexture[1].get();
+        if (rtResources->rtParams.bloomStrength > 0.0f) {
+            RenderTexture *bloomInput = rtOutputCur;
+            uint32_t bloomInputWidth = rtResources->textureWidth;
+            uint32_t bloomInputHeight = rtResources->textureHeight;
+            if (upscalerActive) {
+                bloomInput = rtResources->upscaledOutputTexture.get();
+                bloomInputWidth = rtResources->screenWidth;
+                bloomInputHeight = rtResources->screenHeight;
+            }
+            else if (rtResources->antialiasingEnabled) {
+                bloomInput = rtResources->antialiasedTexture[rtResources->swapBuffers ? 1 : 0].get();
+            }
+
+            const ShaderRecord &bloom = shaderLibrary->bloom;
+            const uint32_t ThreadGroupWorkCount = 8;
+            const uint32_t dispatchX = (rtResources->bloomWidth + ThreadGroupWorkCount - 1) / ThreadGroupWorkCount;
+            const uint32_t dispatchY = (rtResources->bloomHeight + ThreadGroupWorkCount - 1) / ThreadGroupWorkCount;
+            interop::BloomCB bloomCB;
+            bloomCB.OutputSize = { rtResources->bloomWidth, rtResources->bloomHeight };
+            bloomCB.Threshold = rtResources->rtParams.bloomThreshold;
+            worker->commandList->setPipeline(bloom.pipeline.get());
+            worker->commandList->setComputePipelineLayout(bloom.pipelineLayout.get());
+
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, { RenderTextureBarrier(bloomInput, RenderTextureLayout::SHADER_READ), RenderTextureBarrier(bloom0, RenderTextureLayout::GENERAL) });
+            bloomCB.InputTexelSize = { 1.0f / bloomInputWidth, 1.0f / bloomInputHeight };
+            bloomCB.Mode = 0;
+            worker->commandList->setComputePushConstants(0, &bloomCB);
+            worker->commandList->setComputeDescriptorSet(rtResources->bloomSets[0]->get(), 0);
+            worker->commandList->dispatch(dispatchX, dispatchY, 1);
+
+            bloomCB.InputTexelSize = { 1.0f / rtResources->bloomWidth, 1.0f / rtResources->bloomHeight };
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, { RenderTextureBarrier(bloom0, RenderTextureLayout::SHADER_READ), RenderTextureBarrier(bloom1, RenderTextureLayout::GENERAL) });
+            bloomCB.Mode = 1;
+            worker->commandList->setComputePushConstants(0, &bloomCB);
+            worker->commandList->setComputeDescriptorSet(rtResources->bloomSets[1]->get(), 0);
+            worker->commandList->dispatch(dispatchX, dispatchY, 1);
+
+            worker->commandList->barriers(RenderBarrierStage::COMPUTE, { RenderTextureBarrier(bloom1, RenderTextureLayout::SHADER_READ), RenderTextureBarrier(bloom0, RenderTextureLayout::GENERAL) });
+            bloomCB.Mode = 2;
+            worker->commandList->setComputePushConstants(0, &bloomCB);
+            worker->commandList->setComputeDescriptorSet(rtResources->bloomSets[2]->get(), 0);
+            worker->commandList->dispatch(dispatchX, dispatchY, 1);
+        }
+
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderTextureBarrier(bloom0, RenderTextureLayout::SHADER_READ));
+
         // Set the final render target. Apply the same scissor and viewport that was determined for the raytracing step.
         worker->commandList->setFramebuffer(colorTarget->textureFramebuffer.get());
         worker->commandList->setViewports(rtScene.viewport);
@@ -1168,6 +1534,8 @@ namespace RT64 {
             worker->commandList->setComputeDescriptorSet(smoothDescSet->get(), 0);
             worker->commandList->dispatch(dispatchCount, 1, 1);
         }
+
+        worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(outputBuffers->worldNormBuffer.buffer.get(), RenderBufferAccess::READ));
     }
 
     void FramebufferRenderer::recordSetup(RenderWorker *worker, std::vector<BufferUploader *> bufferUploaders, RSPProcessor *rspProcessor,
@@ -1595,11 +1963,25 @@ namespace RT64 {
                         const RenderBottomLevelASMesh asMesh(indexRes->at(call.meshDesc.faceIndicesStart *IndexStride), worldPosRes->at(0), RenderFormat::R32_UINT, RenderFormat::R32G32B32_FLOAT, call.callDesc.triangleCount * 3, vertexCount, PosStride, false);
                         rtResources->addBottomLevelASMesh(asMesh);
 
-                        if (false) { // TODO: call.shaderDesc.flags.smoothNormal
-                            RSPSmoothNormalGenerationCB rspSmoothNormal;
-                            rspSmoothNormal.indexStart = call.meshDesc.faceIndicesStart;
-                            rspSmoothNormal.indexCount = call.callDesc.triangleCount * 3;
-                            rspSmoothNormalVector.push_back(rspSmoothNormal);
+                        // Geometry without lighting has no normals, so the path tracer would shade it with the normals
+                        // of its faces. Smooth normals are computed for it instead, so low polygon models look rounder.
+                        // Large draw calls are skipped, as the cost grows with the square of the triangle count.
+                        static const float smoothNormalAngle = enhancementValue("RT64_RT_SMOOTH_NORMALS", 50.0f);
+                        if ((smoothNormalAngle > 0.0f) && !call.callDesc.rspLit && (call.callDesc.triangleCount <= 1024)) {
+                            // Models are usually drawn in several consecutive calls (like the halves of a head), so
+                            // consecutive ranges of triangles are merged to weld the vertices between them too.
+                            const uint32_t indexStart = call.meshDesc.faceIndicesStart;
+                            const uint32_t indexCount = call.callDesc.triangleCount * 3;
+                            if (!rspSmoothNormalVector.empty() && ((rspSmoothNormalVector.back().indexStart + rspSmoothNormalVector.back().indexCount) == indexStart) && ((rspSmoothNormalVector.back().indexCount + indexCount) <= (1024 * 3))) {
+                                rspSmoothNormalVector.back().indexCount += indexCount;
+                            }
+                            else {
+                                RSPSmoothNormalGenerationCB rspSmoothNormal;
+                                rspSmoothNormal.indexStart = indexStart;
+                                rspSmoothNormal.indexCount = indexCount;
+                                rspSmoothNormal.creaseCosine = cosf(smoothNormalAngle * 3.14159265f / 180.0f);
+                                rspSmoothNormalVector.push_back(rspSmoothNormal);
+                            }
                         }
                     }
                     else 
@@ -1718,10 +2100,21 @@ namespace RT64 {
                         rtScene.prevProjMatrix = drawData.prevProjTransforms[proj.transformsIndex];
 
                         const auto &viewport = drawData.rspViewports[proj.transformsIndex];
-                        rtScene.viewport = convertViewportRect(viewport.rect(viewportClipRatios), p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, 0.0f, G_EX_ORIGIN_NONE, G_EX_ORIGIN_NONE);
+                        // The raytraced output must cover the area the projection maps to, which is the viewport without
+                        // the extended clipping ratios the game might use for the guard band.
+                        const int16_t unitClipRatios[4] = { 1, 1, -1, -1 };
+                        rtScene.viewport = convertViewportRect(viewport.rect(unitClipRatios), p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, 0.0f, G_EX_ORIGIN_NONE, G_EX_ORIGIN_NONE);
                         rtScene.scissor = convertFixedRect(proj.scissorRect, p.resolutionScale, p.fbWidth, invRatioScale, extOriginPercentage, 0, G_EX_ORIGIN_NONE, G_EX_ORIGIN_NONE);
 
                         rtScene.presetScene = p.presetScene;
+                        rtScene.worldUp = p.curWorkload->worldUp;
+                        rtScene.worldRight = p.curWorkload->worldRight;
+                        rtScene.worldForward = p.curWorkload->worldForward;
+                        rtScene.worldOrigin = p.curWorkload->worldOrigin;
+                        if (float(hlslpp::dot(rtScene.worldUp, rtScene.worldUp)) < 1e-6f) {
+                            rtScene.worldUp = { 0.0f, 1.0f, 0.0f };
+                        }
+                        rtScene.deltaTime = std::max(p.deltaTimeMs / 1000.0f, 1e-4f);
                         rtScene.screenWidth = lround(static_cast<float>(p.fbWidth) * p.resolutionScale.x);
                         rtScene.screenHeight = lround(static_cast<float>(p.fbHeight) * p.resolutionScale.y);
 
@@ -1784,13 +2177,29 @@ namespace RT64 {
         }
 
         if (chosenRtScene != nullptr) {
-            if (rtResources->updateOutputBuffers) {
+            const bool sizeChanged = (rtResources->screenWidth != chosenRtScene->screenWidth) || (rtResources->screenHeight != chosenRtScene->screenHeight);
+            if (rtResources->updateOutputBuffers || sizeChanged) {
                 rtResources->createOutputBuffers(worker, chosenRtScene->screenWidth, chosenRtScene->screenHeight);
                 rtResources->updateOutputBuffers = false;
             }
 
             const RenderTarget *framebufferTarget = chosenFramebuffer->renderTargetDrawCall.fbStorage->colorTarget;
             interleavedRastersCount = static_cast<uint32_t>(chosenRtScene->interleavedRasters.size());
+
+            // Debugging aid: RT64_RT_PRINT_STATS prints the composition of the raytraced scene.
+            static const bool printStats = (getenv("RT64_RT_PRINT_STATS") != nullptr);
+            static uint32_t printStatsCounter = 0;
+            if (printStats && ((printStatsCounter++ % 120) == 0)) {
+                uint32_t rtSceneCount = 0;
+                for (uint32_t i = 0; i < framebufferCount; i++) {
+                    rtSceneCount += uint32_t(framebufferVector[i].renderTargetDrawCall.rtScenes.size());
+                }
+
+                fprintf(stderr, "RT scene: %zu instances, %u interleaved rasters, %u RT scenes in %u framebuffers, viewport %.0f %.0f %.0f %.0f, screen %u x %u" "\n",
+                    chosenRtScene->instanceIndices.size(), interleavedRastersCount, rtSceneCount, framebufferCount,
+                    chosenRtScene->viewport.x, chosenRtScene->viewport.y, chosenRtScene->viewport.width, chosenRtScene->viewport.height,
+                    chosenRtScene->screenWidth, chosenRtScene->screenHeight);
+            }
             rtResources->updateInterleavedRenderTargets(worker, chosenRtScene->screenWidth, chosenRtScene->screenHeight, interleavedRastersCount, framebufferTarget->multisampling, framebufferTarget->usesHDR);
 
             for (uint32_t i = 0; i < interleavedRastersCount; i++) {
@@ -1818,6 +2227,16 @@ namespace RT64 {
 
         shaderUploader->submit(worker, shaderUploads);
         updateShaderViews(worker, drawBuffers, outputBuffers, shaderViewRtEnabled);
+
+#   if RT_ENABLED
+        // The shader binding table must be built after the descriptor sets are updated, as some backends store the
+        // location of the descriptors in the table and the sets can be recreated while updating them.
+        if (shaderViewRtEnabled) {
+            RenderDescriptorSet *descriptorSets[] = { descCommonSet->get(), descTextureSet->get(), descTextureSet->get(), chosenFramebuffer->descRealFbSet->get() };
+            rtResources->createShaderBindingTable(worker, rtState, descriptorSets, uint32_t(std::size(descriptorSets)), hitGroupVector);
+            rtFramebufferIndex = uint32_t(chosenFramebuffer - framebufferVector.data());
+        }
+#   endif
     }
 
     void FramebufferRenderer::advanceFrame(bool rtEnabled) {

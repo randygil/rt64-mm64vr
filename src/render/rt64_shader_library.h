@@ -32,6 +32,8 @@ namespace RT64 {
         ShaderRecord fbWriteDepth;
         ShaderRecord fbWriteDepthMS;
         ShaderRecord gaussianFilterRGB3x3;
+        ShaderRecord temporalAA;
+        ShaderRecord bloom;
         ShaderRecord histogramAverage;
         ShaderRecord histogramClear;
         ShaderRecord histogramSet;

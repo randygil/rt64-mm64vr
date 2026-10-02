@@ -8,11 +8,26 @@
 #include "shared/rt64_extra_params.h"
 #include "shared/rt64_point_light.h"
 
-// Root signature
+// Must be included after the declaration of SceneBVH. Acceleration structures can't be passed as function
+// parameters in SPIR-V when the call can't be inlined trivially, so the global one is used directly.
 
 #define MAX_LIGHTS 24
 
-float TraceShadow(RaytracingAccelerationStructure bvh, float3 rayOrigin, float3 rayDirection, float rayMinDist, float rayMaxDist, uint rayQueryMask) {
+float spotLightIntensity(float lightSpotDot, float lightSpotFalloffCosine, float lightSpotMaxCosine) {
+    // Lights without a cone (like the estimated sun) use the same value for both cosines.
+    float cosineRange = lightSpotMaxCosine - lightSpotFalloffCosine;
+    if (abs(cosineRange) < EPSILON) {
+        return 1.0f;
+    }
+
+    return 1.0f - clamp((lightSpotDot - lightSpotFalloffCosine) / cosineRange, 0.0f, 1.0f);
+}
+
+float TraceShadow(float3 rayOrigin, float3 rayDirection, float rayMinDist, float rayMaxDist, uint rayQueryMask) {
+    if (RtParams.debugFlags & 0x1) {
+        return 1.0f;
+    }
+
     RayDesc ray;
     ray.Origin = rayOrigin;
     ray.Direction = rayDirection;
@@ -35,7 +50,7 @@ float TraceShadow(RaytracingAccelerationStructure bvh, float3 rayOrigin, float3 
     flags |= RAY_FLAG_CULL_BACK_FACING_TRIANGLES;
 #endif
 
-    TraceRay(bvh, flags, rayQueryMask, 1, 0, 1, ray, shadowPayload);
+    TraceRay(SceneBVH, flags, rayQueryMask, 1, 0, 1, ray, shadowPayload);
     return shadowPayload.shadowHit;
 }
 
@@ -63,7 +78,7 @@ float CalculateShadowIntensitySimple(PointLight pointLight, float3 position) {
     return pow(max(1.0f - (lightDistance / lightRadius), 0.0f), lightAttenuation);
 }
 
-float3 ComputeLight(RaytracingAccelerationStructure bvh, PointLight pointLight, ExtraParams extraParams, uint2 launchIndex,
+float3 ComputeLight(PointLight pointLight, ExtraParams extraParams, uint2 launchIndex,
                     float3 rayDirection, float3 position, float3 normal, float3 specular, bool checkShadows, uint diSamples,
                     uint frameCount, Texture2D<float4> blueNoiseTexture) 
 {
@@ -97,8 +112,8 @@ float3 ComputeLight(RaytracingAccelerationStructure bvh, PointLight pointLight, 
         float3 samplePosition = lightPosition + perpX * sampleCoordinate.x * lightPointRadius + perpY * sampleCoordinate.y * lightPointRadius;
         float3 sampleDirection = normalize(samplePosition - position);
         float lightSpotDot = dot(sampleDirection, lightSpotDirection);
-        if (lightSpotDot <= lightSpotMaxCosine) {
-            float spotIntensity = 1.0f - clamp((lightSpotDot - lightSpotFalloffCosine) / (lightSpotMaxCosine - lightSpotFalloffCosine), 0.0f, 1.0f);
+        if ((lightSpotMaxCosine >= 1.0f) || (lightSpotDot <= lightSpotMaxCosine)) {
+            float spotIntensity = spotLightIntensity(lightSpotDot, lightSpotFalloffCosine, lightSpotMaxCosine);
             float sampleDistance = length(position - samplePosition);
             float sampleIntensityFactor = pow(max(1.0f - (sampleDistance / lightRadius), 0.0f), lightAttenuation) * spotIntensity;
             float3 reflectedLight = reflect(-sampleDirection, normal);
@@ -106,7 +121,7 @@ float3 ComputeLight(RaytracingAccelerationStructure bvh, PointLight pointLight, 
             float sampleLambertFactor = lerp(NdotL, 1.0f, ignoreNormalFactor) * sampleIntensityFactor;
             float sampleShadowFactor = 1.0f;
             if (checkShadows) {
-                sampleShadowFactor = TraceShadow(bvh, position, sampleDirection, RAY_MIN_DISTANCE + shadowRayBias, (sampleDistance - shadowOffset), DEPTH_RAY_QUERY_MASK);
+                sampleShadowFactor = TraceShadow(position, sampleDirection, RAY_MIN_DISTANCE + shadowRayBias, (sampleDistance - shadowOffset), DEPTH_RAY_QUERY_MASK);
             }
 
             float3 sampleSpecularityFactor = specular * pow(max(saturate(dot(reflectedLight, -rayDirection) * sampleIntensityFactor), 0.0f), specularExponent);
@@ -124,7 +139,7 @@ float3 ComputeLight(RaytracingAccelerationStructure bvh, PointLight pointLight, 
 // TODO: The implementation of this is mostly copied from the other function. Figure out a way to make
 // both share the same overall implementation to compute the samples.
 
-float ComputeShadow(RaytracingAccelerationStructure bvh, PointLight pointLight, ExtraParams extraParams, uint2 launchIndex, float3 rayDirection,
+float ComputeShadow(PointLight pointLight, ExtraParams extraParams, uint2 launchIndex, float3 rayDirection,
                     float3 position, uint rayQueryMask, uint diSamples, uint frameCount, Texture2D<float4> blueNoiseTexture) 
 {
     float shadowRayBias = extraParams.shadowRayBias;
@@ -153,11 +168,11 @@ float ComputeShadow(RaytracingAccelerationStructure bvh, PointLight pointLight, 
         float3 samplePosition = lightPosition + perpX * sampleCoordinate.x * lightPointRadius + perpY * sampleCoordinate.y * lightPointRadius;
         float3 sampleDirection = normalize(samplePosition - position);
         float lightSpotDot = dot(sampleDirection, lightSpotDirection);
-        if (lightSpotDot <= lightSpotMaxCosine) {
-            float spotIntensity = 1.0f - clamp((lightSpotDot - lightSpotFalloffCosine) / (lightSpotMaxCosine - lightSpotFalloffCosine), 0.0f, 1.0f);
+        if ((lightSpotMaxCosine >= 1.0f) || (lightSpotDot <= lightSpotMaxCosine)) {
+            float spotIntensity = spotLightIntensity(lightSpotDot, lightSpotFalloffCosine, lightSpotMaxCosine);
             float sampleDistance = length(position - samplePosition);
             float sampleIntensityFactor = pow(max(1.0f - (sampleDistance / lightRadius), 0.0f), lightAttenuation) * spotIntensity;
-            float sampleShadowFactor = 1.0f - TraceShadow(bvh, position, sampleDirection, RAY_MIN_DISTANCE + shadowRayBias, (sampleDistance - shadowOffset), rayQueryMask);
+            float sampleShadowFactor = 1.0f - TraceShadow(position, sampleDirection, RAY_MIN_DISTANCE + shadowRayBias, (sampleDistance - shadowOffset), rayQueryMask);
             lShadowFactor += sampleShadowFactor / maxSamples;
         }
 
@@ -167,7 +182,7 @@ float ComputeShadow(RaytracingAccelerationStructure bvh, PointLight pointLight, 
     return lShadowFactor;
 }
 
-float3 ComputeLightsRandom(RaytracingAccelerationStructure bvh, StructuredBuffer<PointLight> pointLights, uint pointLightsCount, ExtraParams extraParams, uint2 launchIndex, float3 rayDirection, float3 position, float3 normal,
+float3 ComputeLightsRandom(StructuredBuffer<PointLight> pointLights, uint pointLightsCount, ExtraParams extraParams, uint2 launchIndex, float3 rayDirection, float3 position, float3 normal,
                             float3 specular, uint maxLightCount, const bool checkShadows, uint diSamples, uint frameCount, Texture2D<float4> blueNoiseTexture) 
 {
     float3 resultLight = float3(0.0f, 0.0f, 0.0f);
@@ -215,7 +230,7 @@ float3 ComputeLightsRandom(RaytracingAccelerationStructure bvh, StructuredBuffer
             randomRange -= cLightIntensity;
 
             // Compute and add the light.
-            resultLight += ComputeLight(bvh, pointLights[cLightIndex], extraParams, launchIndex, rayDirection, position, normal, specular, checkShadows, diSamples, frameCount, blueNoiseTexture) * invProbability;
+            resultLight += ComputeLight(pointLights[cLightIndex], extraParams, launchIndex, rayDirection, position, normal, specular, checkShadows, diSamples, frameCount, blueNoiseTexture) * invProbability;
         }
     }
 
@@ -225,7 +240,7 @@ float3 ComputeLightsRandom(RaytracingAccelerationStructure bvh, StructuredBuffer
 // TODO: The implementation of this is mostly copied from the other function. Figure out a way to make
 // both share the same overall implementation to search for lights.
 
-float ComputeShadowsRandom(RaytracingAccelerationStructure bvh, StructuredBuffer<PointLight> pointLights, uint pointLightsCount, ExtraParams extraParams, uint2 launchIndex, float3 rayDirection, float3 position,
+float ComputeShadowsRandom(StructuredBuffer<PointLight> pointLights, uint pointLightsCount, ExtraParams extraParams, uint2 launchIndex, float3 rayDirection, float3 position,
                             uint maxLightCount, uint rayQueryMask, uint diSamples, uint frameCount, Texture2D<float4> blueNoiseTexture)
 {
     float resultShadow = 0.0f;
@@ -272,7 +287,7 @@ float ComputeShadowsRandom(RaytracingAccelerationStructure bvh, StructuredBuffer
             randomRange -= cLightIntensity;
 
             // Compute and add the shadow.
-            resultShadow += ComputeShadow(bvh, pointLights[cLightIndex], extraParams, launchIndex, rayDirection, position, rayQueryMask, diSamples, frameCount, blueNoiseTexture) * invProbability;
+            resultShadow += ComputeShadow(pointLights[cLightIndex], extraParams, launchIndex, rayDirection, position, rayQueryMask, diSamples, frameCount, blueNoiseTexture) * invProbability;
         }
     }
 

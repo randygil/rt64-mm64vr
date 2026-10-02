@@ -115,6 +115,7 @@ namespace RT64 {
         drawCall.colorCombiner = { 0, 0 };
         drawCall.otherMode = { 0, 0 };
         drawCall.geometryMode = 0;
+        drawCall.rspLit = false;
         drawCall.objRenderMode = 0;
         drawCall.fillColor = 0;
         drawCall.tileIndex = 0;
@@ -447,6 +448,7 @@ namespace RT64 {
         FramebufferPair &fbPair = workload.fbPairs[workload.currentFramebufferPairIndex()];
         drawCall.cullBothMask = rsp->cullBothMask;
         drawCall.shadingSmoothMask = rsp->shadingSmoothMask;
+        drawCall.rspLit = (rsp->curLightCount > 0);
         drawCall.NoN = rsp->NoN;
         drawCall.drawStatusChanges = drawStatus.changed;
         drawCall.callIndex = workload.gameCallCount++;
@@ -1624,8 +1626,68 @@ namespace RT64 {
             }
         }
 
+        // Models lit by the RSP (characters and objects) get a sharper and stronger highlight than the scenery.
+        float modelSpecular = 0.5f, modelSpecularExponent = 5.0f, scenerySpecular = 0.5f, scenerySpecularExponent = 5.0f;
+#   if RT_ENABLED
+        modelSpecular = enhancementValue("RT64_RT_MODEL_SPECULAR", 0.45f);
+        modelSpecularExponent = enhancementValue("RT64_RT_MODEL_GLOSS", 28.0f);
+        scenerySpecular = enhancementValue("RT64_RT_SCENERY_SPECULAR", 0.12f);
+        scenerySpecularExponent = enhancementValue("RT64_RT_SCENERY_GLOSS", 6.0f);
+#   endif
+
         for (uint32_t f = 0; f < workload.fbPairCount; f++) {
             FramebufferPair &fbPair = workload.fbPairs[f];
+
+            // Look for a sky: textured rectangles drawn before the first 3D projection that cover a large part of the
+            // framebuffer.
+            bool skyBackground = !sunRequiresSkyBackground;
+            if (sunRequiresSkyBackground) {
+                FixedRect backgroundRect;
+                bool perspectiveFound = false;
+                for (uint32_t p = 0; p < fbPair.projectionCount; p++) {
+                    const Projection &proj = fbPair.projections[p];
+                    if (proj.type == Projection::Type::Perspective) {
+                        perspectiveFound = true;
+                        break;
+                    }
+                    else if (proj.type != Projection::Type::Rectangle) {
+                        continue;
+                    }
+
+                    for (uint32_t d = 0; d < proj.gameCallCount; d++) {
+                        const DrawCall &callDesc = proj.gameCalls[d].callDesc;
+                        if ((callDesc.tileCount > 0) && !callDesc.rect.isNull()) {
+                            backgroundRect.merge(callDesc.rect);
+                        }
+                    }
+                }
+
+                const int32_t fbWidth = std::max(int32_t(fbPair.colorImage.width), 1);
+                const bool skyDrawn = !backgroundRect.isNull() && (backgroundRect.width(false, false) * 2 >= fbWidth);
+                if (perspectiveFound) {
+                    if (skyDrawn && (sceneKey != UINT32_MAX)) {
+                        exteriorSceneKeys.insert(sceneKey);
+                    }
+
+                    framesWithoutSky = skyDrawn ? 0 : (framesWithoutSky + 1);
+                }
+
+                if (sceneKey != UINT32_MAX) {
+                    skyBackground = skyDrawn || (exteriorSceneKeys.find(sceneKey) != exteriorSceneKeys.end());
+                }
+                else {
+                    const uint32_t MaxFramesWithoutSky = 120;
+                    skyBackground = (framesWithoutSky < MaxFramesWithoutSky);
+                }
+            }
+
+#       if RT_ENABLED
+            // Debugging: treats every frame as an interior.
+            if (enhancementValue("RT64_RT_FORCE_INDOOR", 0.0f) > 0.0f) {
+                skyBackground = false;
+            }
+#       endif
+
             for (uint32_t p = 0; p < fbPair.projectionCount; p++) {
                 Projection &proj = fbPair.projections[p];
                 for (uint32_t d = 0; d < proj.gameCallCount; d++) {
@@ -1639,8 +1701,10 @@ namespace RT64 {
                     extraParams.roughnessFactor = 0.0f;
                     extraParams.refractionFactor = 0.0f;
                     extraParams.shadowCatcherFactor = 0.0f;
-                    extraParams.specularColor = { 0.5f, 0.5f, 0.5f };
-                    extraParams.specularExponent = 5.0f;
+                    const bool litModel = gameCall.callDesc.rspLit;
+                    const float specular = litModel ? modelSpecular : scenerySpecular;
+                    extraParams.specularColor = { specular, specular, specular };
+                    extraParams.specularExponent = litModel ? modelSpecularExponent : scenerySpecularExponent;
                     extraParams.solidAlphaMultiplier = 1.0f;
                     extraParams.shadowAlphaMultiplier = 1.0f;
                     extraParams.diffuseColorMix = { 0.0f, 0.0f, 0.0f, 0.0f };
@@ -1733,10 +1797,76 @@ namespace RT64 {
                 }
 
                 if (proj.type == Projection::Type::Perspective) {
-                    // Add estimated sun light if enabled.
-                    if (gameConfig.estimateSunLight) {
-                        proj.addPointLight(proj.lightManager.estimatedSunLight(gameConfig.sunLightIntensity, gameConfig.sunLightDistance));
+                    {
+                        const interop::float4x4 &upViewMatrix = workload.drawData.viewTransforms[proj.transformsIndex];
+                        const interop::float4x4 &upProjMatrix = workload.drawData.projTransforms[proj.transformsIndex];
+                        const float upSign = ((upViewMatrix[1][1] * upProjMatrix[1][1]) < 0.0f) ? -1.0f : 1.0f;
+                        workload.worldUp = worldViewRotationValid ? hlslpp::float3(worldViewRotation[1], worldViewRotation[4], worldViewRotation[7]) : hlslpp::float3(0.0f, upSign, 0.0f);
+                        workload.worldRight = worldViewRotationValid ? hlslpp::float3(worldViewRotation[0], worldViewRotation[3], worldViewRotation[6]) : hlslpp::float3(1.0f, 0.0f, 0.0f);
+                        workload.worldOrigin = (worldViewRotationValid && worldViewTranslationValid) ? hlslpp::float4(worldViewTranslation[0], worldViewTranslation[1], worldViewTranslation[2], 1.0f) : hlslpp::float4(0.0f, 0.0f, 0.0f, 0.0f);
+                        workload.worldForward = worldViewRotationValid ? hlslpp::float3(worldViewRotation[2], worldViewRotation[5], worldViewRotation[8]) : hlslpp::float3(0.0f, 0.0f, 1.0f);
                     }
+
+                    // Add estimated sun light if enabled.
+                    if (gameConfig.estimateSunLight && skyBackground) {
+                        // The world's Y axis is considered to point down if it ends up pointing down on the screen.
+                        const interop::float4x4 &viewMatrix = workload.drawData.viewTransforms[proj.transformsIndex];
+                        const interop::float4x4 &projMatrix = workload.drawData.projTransforms[proj.transformsIndex];
+                        const float worldUpSign = ((viewMatrix[1][1] * projMatrix[1][1]) < 0.0f) ? -1.0f : 1.0f;
+                        proj.addPointLight(proj.lightManager.estimatedSunLight(
+#                       if RT_ENABLED
+                            enhancementValue("RT64_RT_SUN_INTENSITY", gameConfig.sunLightIntensity),
+#                       else
+                            gameConfig.sunLightIntensity,
+#                       endif
+                            gameConfig.sunLightDistance, worldUpSign,
+                            gameConfig.sunUsesGameLightDirection,
+#                       if RT_ENABLED
+                            enhancementValue("RT64_RT_SUN_AZIMUTH", gameConfig.sunAzimuthDegrees), enhancementValue("RT64_RT_SUN_ELEVATION", gameConfig.sunElevationDegrees),
+#                       else
+                            gameConfig.sunAzimuthDegrees, gameConfig.sunElevationDegrees,
+#                       endif
+                            worldViewRotationValid ? worldViewRotation : nullptr));
+                    }
+
+#               if RT_ENABLED
+                    // Interiors get a soft light carried above the camera instead, like a lantern, so characters and
+                    // the walls around them cast shadows.
+                    const float indoorLightIntensity = enhancementValue("RT64_RT_INDOOR_LIGHT", 1.2f);
+                    if (!skyBackground && (indoorLightIntensity > 0.0f)) {
+                        const interop::float4x4 &viewMatrix = workload.drawData.viewTransforms[proj.transformsIndex];
+                        const hlslpp::float4x4 invViewMatrix = hlslpp::inverse(viewMatrix);
+                        hlslpp::float3 upDir = { 0.0f, ((viewMatrix[1][1] * workload.drawData.projTransforms[proj.transformsIndex][1][1]) < 0.0f) ? -1.0f : 1.0f, 0.0f };
+                        if (worldViewRotationValid) {
+                            upDir = { worldViewRotation[1], worldViewRotation[4], worldViewRotation[7] };
+                        }
+
+                        // The light sits above the point the camera looks at on the ground plane, around where the
+                        // player usually is, so the shadows fall where they can be seen.
+                        const hlslpp::float3 cameraPos = { float(invViewMatrix[3][0]), float(invViewMatrix[3][1]), float(invViewMatrix[3][2]) };
+                        const float forwardSign = (workload.drawData.projTransforms[proj.transformsIndex][2][3] < 0.0f) ? -1.0f : 1.0f;
+                        hlslpp::float3 forwardDir = hlslpp::float3(float(invViewMatrix[2][0]), float(invViewMatrix[2][1]), float(invViewMatrix[2][2])) * forwardSign;
+                        forwardDir = forwardDir - upDir * float(hlslpp::dot(forwardDir, upDir));
+                        const float forwardLength = float(hlslpp::length(forwardDir));
+                        forwardDir = (forwardLength > 1e-4f) ? (forwardDir / forwardLength) : hlslpp::float3(0.0f, 0.0f, 0.0f);
+                        const hlslpp::float3 lightPos = cameraPos + upDir * enhancementValue("RT64_RT_INDOOR_LIGHT_HEIGHT", 450.0f) + forwardDir * enhancementValue("RT64_RT_INDOOR_LIGHT_FORWARD", 550.0f);
+                        const float lightRadius = enhancementValue("RT64_RT_INDOOR_LIGHT_RADIUS", 3000.0f);
+                        interop::PointLight light;
+                        light.position = { lightPos.x, lightPos.y, lightPos.z };
+                        light.direction = { 0.0f, 0.0f, 0.0f };
+                        light.diffuseColor = { indoorLightIntensity, indoorLightIntensity * 0.92f, indoorLightIntensity * 0.8f };
+                        light.specularColor = { indoorLightIntensity * 0.3f, indoorLightIntensity * 0.28f, indoorLightIntensity * 0.24f };
+                        light.attenuationRadius = lightRadius;
+                        light.attenuationExponent = enhancementValue("RT64_RT_INDOOR_LIGHT_FALLOFF", 1.5f);
+                        light.pointRadius = enhancementValue("RT64_RT_INDOOR_LIGHT_SIZE", 40.0f);
+                        light.spotFalloffCosine = 1.0f;
+                        light.spotMaxCosine = 1.0f;
+                        light.shadowOffset = 0.0f;
+                        light.flickerIntensity = 0.0f;
+                        light.groupBits = 1;
+                        proj.addPointLight(light);
+                    }
+#               endif
                 }
 
 #if 0
@@ -2372,6 +2502,9 @@ namespace RT64 {
                     ImGui::BeginDisabled(!gameConfig.estimateSunLight);
                     ImGui::DragFloat("Sun Intensity", &gameConfig.sunLightIntensity, 0.01f, 0.0f, FLT_MAX);
                     ImGui::DragFloat("Sun Distance", &gameConfig.sunLightDistance, 1.0f, 0.0f, FLT_MAX);
+                    ImGui::Checkbox("Sun Uses Game Light Direction", &gameConfig.sunUsesGameLightDirection);
+                    ImGui::DragFloat("Sun Azimuth", &gameConfig.sunAzimuthDegrees, 0.5f, -360.0f, 360.0f);
+                    ImGui::DragFloat("Sun Elevation", &gameConfig.sunElevationDegrees, 0.5f, 1.0f, 90.0f);
                     ImGui::EndDisabled();
                     ImGui::Checkbox("RSP Lights as Diffuse", &gameConfig.rspLightAsDiffuse);
                     ImGui::BeginDisabled(!gameConfig.rspLightAsDiffuse);

@@ -1123,6 +1123,19 @@ namespace RT64 {
                     // Add total time the frame took to render.
                     renderTimeTotalMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
 
+                    // Debugging aid: RT64_PRINT_FRAME_TIME prints the average time it takes to render a frame.
+                    static const bool printFrameTime = (getenv("RT64_PRINT_FRAME_TIME") != nullptr);
+                    if (printFrameTime) {
+                        static int64_t accumulatedMicro = 0;
+                        static uint32_t accumulatedFrames = 0;
+                        accumulatedMicro += workloadTimer.elapsedMicroseconds() - renderTimeMicro;
+                        if (++accumulatedFrames == 120) {
+                            fprintf(stderr, "Frame render time: %.2f ms (RT %s)" "\n", accumulatedMicro / 120000.0, workloadConfig.raytracingEnabled ? "on" : "off");
+                            accumulatedMicro = 0;
+                            accumulatedFrames = 0;
+                        }
+                    }
+
                     // After one frame is rendered, we indicate the workload has been processed so the present thread can start presenting frames as soon as it can.
                     if (frame == 0) {
                         threadAdvanceWorkloadId(workload.workloadId);

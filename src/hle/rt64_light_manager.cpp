@@ -104,8 +104,23 @@ namespace RT64 {
         }
     }
 
-    interop::PointLight LightManager::estimatedSunLight(const float sunIntensity, const float sunDistance) const {
-        hlslpp::float3 sunDir = { 0.5f, 1.0f, 0.0f };
+    interop::PointLight LightManager::estimatedSunLight(const float sunIntensity, const float sunDistance, const float worldUpSign, const bool useGameLightDirection, const float azimuthDegrees, const float elevationDegrees, const float *worldViewRotation) const {
+        // Some games use a world where the Y axis points down, so the default direction follows the up axis of the camera.
+        const float DegreesToRadians = 3.14159265f / 180.0f;
+        const float azimuth = azimuthDegrees * DegreesToRadians;
+        const float elevation = elevationDegrees * DegreesToRadians;
+        hlslpp::float3 sunDir = { cosf(elevation) * cosf(azimuth), sinf(elevation) * worldUpSign, cosf(elevation) * sinf(azimuth) };
+        if (worldViewRotation != nullptr) {
+            // The direction is defined in a world with Y pointing up and rotated to the space of the geometry.
+            const float x = cosf(elevation) * cosf(azimuth);
+            const float y = sinf(elevation);
+            const float z = cosf(elevation) * sinf(azimuth);
+            const float *r = worldViewRotation;
+            sunDir.x = r[0] * x + r[1] * y + r[2] * z;
+            sunDir.y = r[3] * x + r[4] * y + r[5] * z;
+            sunDir.z = r[6] * x + r[7] * y + r[8] * z;
+        }
+
         hlslpp::float3 sunCol = { 0.8f, 0.7f, 0.6f };
         float biggestIntensity = 0;
         int biggestDirLight = -1;
@@ -119,7 +134,10 @@ namespace RT64 {
         // Pick the light with the biggest amount of matches.
         if (biggestDirLight >= 0) {
             const auto &l = directionalLights[biggestDirLight];
-            sunDir = l.dir;
+            if (useGameLightDirection) {
+                sunDir = l.dir;
+            }
+
             sunCol.x = l.colTotal.x / l.intensityTotal;
             sunCol.y = l.colTotal.y / l.intensityTotal;
             sunCol.z = l.colTotal.z / l.intensityTotal;
@@ -142,7 +160,7 @@ namespace RT64 {
         res.specularColor.x = res.diffuseColor.x * 0.5f;
         res.specularColor.y = res.diffuseColor.y * 0.5f;
         res.specularColor.z = res.diffuseColor.z * 0.5f;
-        res.pointRadius = sunDistance * 0.01f;
+        res.pointRadius = sunDistance * 0.006f;
         res.spotFalloffCosine = 1.0f;
         res.spotMaxCosine = 1.0f;
         res.attenuationRadius = 99999997952.0f;

@@ -10,6 +10,7 @@
 RWByteAddressBuffer LuminanceHistogram : register(u0);
 
 [numthreads(HISTOGRAM_AVERAGE_THREADS_PER_DIMENSION, HISTOGRAM_AVERAGE_THREADS_PER_DIMENSION, 1)]
-void CSMain(uint3 threadId : SV_DispatchThreadID) {
-    LuminanceHistogram.Store(threadId.x * threadId.y, 0);
+void CSMain(uint groupIndex : SV_GroupIndex) {
+    // The histogram uses 64 bins, which matches the amount of threads in a single group.
+    LuminanceHistogram.Store(groupIndex * 4, 0);
 }

@@ -347,6 +347,46 @@ namespace RT64 {
         }
     };
 
+    struct TemporalAADescriptorSet : RenderDescriptorSetBase {
+        uint32_t gCurrent;
+        uint32_t gHistory;
+        uint32_t gFlow;
+        uint32_t gOutput;
+        uint32_t gSampler;
+
+        TemporalAADescriptorSet(const SamplerLibrary &samplerLibrary, RenderDevice *device = nullptr) {
+            builder.begin();
+            gCurrent = builder.addTexture(1);
+            gHistory = builder.addTexture(2);
+            gFlow = builder.addTexture(3);
+            gOutput = builder.addReadWriteTexture(4);
+            gSampler = builder.addImmutableSampler(5, samplerLibrary.linear.clampClamp.get());
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
+    struct BloomDescriptorSet : RenderDescriptorSetBase {
+        uint32_t gInput;
+        uint32_t gOutput;
+        uint32_t gSampler;
+
+        BloomDescriptorSet(const SamplerLibrary &samplerLibrary, RenderDevice *device = nullptr) {
+            builder.begin();
+            gInput = builder.addTexture(1);
+            gOutput = builder.addReadWriteTexture(2);
+            gSampler = builder.addImmutableSampler(3, samplerLibrary.linear.clampClamp.get());
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
     struct HistogramAverageDescriptorSet : RenderDescriptorSetBase {
         uint32_t LuminanceHistogram;
         uint32_t LuminanceOutput;
@@ -413,6 +453,7 @@ namespace RT64 {
         uint32_t gFlow;
         uint32_t gLumaAvg;
         uint32_t gSampler;
+        uint32_t gBloom;
 
         PostProcessDescriptorSet(const SamplerLibrary &samplerLibrary, RenderDevice *device = nullptr) {
             builder.begin();
@@ -421,6 +462,7 @@ namespace RT64 {
             gFlow = builder.addTexture(2);
             gLumaAvg = builder.addTexture(3);
             gSampler = builder.addImmutableSampler(4, samplerLibrary.linear.clampClamp.get());
+            gBloom = builder.addTexture(5);
             builder.end();
 
             if (device != nullptr) {
