@@ -325,14 +325,19 @@ namespace RT64 {
             uploadProjections = true;
         }
 
-        const bool processTransforms = prevFrame.matched;
+        // The enhanced lighting draws the shadow casters with their positions in world space, so the world vertices are
+        // processed even when the frame isn't interpolated (VR at the game's rate, for one), and they need the transforms
+        // with their inverses (normals) and previous ones (velocities) uploaded too: the vertex processor would otherwise
+        // read buffers that were never created.
+        const bool lightingActive = isRasterLightingEnabled() && !workloadConfig.raytracingEnabled && (enhancementValue("RT64_LIGHT_ENABLE", 1.0f) > 0.0f);
+        const bool processTransforms = prevFrame.matched || lightingActive;
         bool uploadTransforms = false;
         if (processTransforms) {
             TransformProcessor::ProcessParams transformParams;
             transformParams.worker = ext.workloadGraphicsWorker;
             transformParams.workloadQueue = this;
             transformParams.curFrame = &curFrame;
-            transformParams.prevFrame = &prevFrame;
+            transformParams.prevFrame = prevFrame.matched ? &prevFrame : nullptr;
             transformParams.curFrameWeight = curFrameWeight;
             transformParams.prevFrameWeight = prevFrameWeight;
             transformProcessor.process(transformParams);
@@ -393,8 +398,6 @@ namespace RT64 {
                 rspProcessor->process(rspParams);
             }
 
-            // The enhanced lighting draws the shadow casters with their positions in world space.
-            const bool lightingActive = isRasterLightingEnabled() && !workloadConfig.raytracingEnabled && (enhancementValue("RT64_LIGHT_ENABLE", 1.0f) > 0.0f);
             const bool processWorldVertices = prevFrame.matched || lightingActive;
             if (processWorldVertices) {
                 workload.resetWorldOutputBuffers();
