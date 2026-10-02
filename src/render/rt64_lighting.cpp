@@ -612,15 +612,16 @@ namespace RT64 {
         params.settings.z = (depthTarget != nullptr) ? depthTarget->multisampling.sampleCount : 1;
         params.settings.w = desc.skyHidden ? LIGHTING_SCENE_FLAG_SKY_HIDDEN : 0U;
 
-        // Skies that aren't daytime skies tint the light, from the analysis of the procedural sky (which needs it on).
+        // Exteriors whose game sky isn't a daytime sky tint the light, from the analysis the procedural sky made of it on
+        // the previous frames. Interiors, and scenes whose sky hasn't been analyzed, don't read it.
+        const uint32_t sceneIndex = uint32_t(scenes.size());
         const float skyTint = enhancementValue("RT64_LIGHT_SKY_TINT", 0.8f);
-        if (!desc.skyHidden && (skyTint > 0.0f) && sky->enabled()) {
+        if (scene.hasSun && !desc.skyHidden && (skyTint > 0.0f) && sky->enabled() && sky->isAnalysisValid(sceneIndex)) {
             params.settings.w |= LIGHTING_SCENE_FLAG_SKY_TINT;
         }
 
         params.lightingTint = hlslpp::float4(skyTint, 0.0f, 0.0f, 0.0f);
 
-        const uint32_t sceneIndex = uint32_t(scenes.size());
         scenes.emplace_back(scene);
         return sceneIndex;
     }
@@ -698,14 +699,17 @@ namespace RT64 {
             return;
         }
 
-        // The shadow map follows the first scene with a sun, usually the main view, and only its draw calls cast shadows
-        // in it. Other scenes are often the same world seen from elsewhere (the other eye in VR), which would draw every
+        // The shadow map follows the biggest scene with a sun (the main view; the first one of equal size, like the left
+        // eye in VR), and only its draw calls cast shadows in it. Other scenes are often the same world seen from elsewhere (the other eye in VR), which would draw every
         // caster twice.
         uint32_t sunSceneIndex = UINT32_MAX;
+        int64_t sunSceneArea = -1;
         for (uint32_t i = 0; i < uint32_t(scenes.size()); i++) {
-            if (scenes[i].hasSun) {
+            const RenderRect &rect = scenes[i].rect;
+            const int64_t area = rect.isEmpty() ? 0 : (int64_t(rect.right - rect.left) * int64_t(rect.bottom - rect.top));
+            if (scenes[i].hasSun && (area > sunSceneArea)) {
                 sunSceneIndex = i;
-                break;
+                sunSceneArea = area;
             }
         }
 
@@ -1189,6 +1193,12 @@ namespace RT64 {
         aoCB.sceneIndex = sceneIndex;
         aoCB.outputSize = { width, height };
         aoCB.frameIndex = frameIndex;
+        // The depth and the normal buffer were last made readable for the graphics passes.
+        worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE, {
+            RenderTextureBarrier(scene.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ),
+            RenderTextureBarrier(normalBuffer.get(), RenderTextureLayout::SHADER_READ)
+        });
+
         worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderTextureBarrier(aoTextures[0].get(), RenderTextureLayout::GENERAL));
         worker->commandList->setPipeline(multisampling ? aoPipelineMS.get() : aoPipeline.get());
         worker->commandList->setComputePipelineLayout(aoPipelineLayout.get());

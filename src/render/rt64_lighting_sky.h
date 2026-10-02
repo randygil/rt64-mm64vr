@@ -58,5 +58,9 @@ namespace RT64 {
         // Analysis of the game's sky of each scene index (float4: average color, how much it can be replaced), kept
         // across frames. The lighting reads it to take the tint of skies that aren't daytime skies.
         const RenderBuffer *getAnalysisBuffer() const;
+
+        // Whether the entry of a scene index holds an analysis (the sky has been drawn for that index without replacing
+        // all of it). Entries that don't are never written, so they must not be read.
+        bool isAnalysisValid(uint32_t sceneIndex) const;
     };
 };

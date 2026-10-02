@@ -543,6 +543,10 @@ namespace RT64 {
         return impl->analysisBuffer.get();
     }
 
+    bool LightingSky::isAnalysisValid(uint32_t sceneIndex) const {
+        return impl->analysisCleared && impl->analysisValid[sceneIndex % SkyAnalysisCount] && !impl->settings.replaceAll;
+    }
+
     bool LightingSky::enabled() const {
         // The host's sky option is shared with the path tracer's procedural sky.
         return isProceduralSkyEnabled() && (enhancementValue("RT64_SKY_ENABLE", 1.0f) > 0.0f);
@@ -692,7 +696,9 @@ namespace RT64 {
             interop::LightingSkyAnalysisCB analysisCB;
             analysisCB.slot = slot;
             analysisCB.padding = 0;
-            worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(impl->analysisBuffer.get(), RenderBufferAccess::WRITE));
+            worker->commandList->barriers(RenderBarrierStage::GRAPHICS_AND_COMPUTE,
+                { RenderBufferBarrier(impl->analysisBuffer.get(), RenderBufferAccess::WRITE) },
+                { RenderTextureBarrier(const_cast<RenderTexture *>(desc.sceneColor), RenderTextureLayout::SHADER_READ), RenderTextureBarrier(desc.depthTarget->texture.get(), RenderTextureLayout::DEPTH_READ) });
             worker->commandList->setPipeline((colorTarget->multisampling.sampleCount > 1) ? impl->analysisPipelineMS.get() : impl->analysisPipeline.get());
             worker->commandList->setComputePipelineLayout(impl->analysisPipelineLayout.get());
             worker->commandList->setComputeDescriptorSet(analysisSet->get(), 0);

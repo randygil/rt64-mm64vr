@@ -199,7 +199,9 @@ namespace RT64 {
         uint32_t frames = 0;
     };
 
-    static GPUMarkerState gpuMarkerState;
+    // Only the thread that records the frames of the workload queue begins markers, but other renderers (the State's own
+    // framebuffer renderer, on the game thread) also reach gpuMarker: each thread has its own state.
+    thread_local GPUMarkerState gpuMarkerState;
 
     void gpuMarker(RenderCommandList *commandList, const char *name) {
         GPUMarkerState &s = gpuMarkerState;
@@ -1689,7 +1691,11 @@ namespace RT64 {
             return;
         }
 
-        worker->commandList->barriers(RenderBarrierStage::COMPUTE, RenderBufferBarrier(outputBuffers->worldNormBuffer.buffer.get(), RenderBufferAccess::WRITE));
+        // The table was just copied by the shader uploader, whose own barriers come after this dispatch.
+        worker->commandList->barriers(RenderBarrierStage::COMPUTE, {
+            RenderBufferBarrier(outputBuffers->worldNormBuffer.buffer.get(), RenderBufferAccess::WRITE),
+            RenderBufferBarrier(smoothNormalGroupsBuffer.defaultBuffer.get(), RenderBufferAccess::READ)
+        });
 
         // All the ranges in one dispatch, with one group per tile of triangles of each range (see endFramebuffers).
         const auto &rspSmoothNormal = shaderLibrary->rspSmoothNormal;
