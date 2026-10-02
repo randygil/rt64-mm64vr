@@ -1627,13 +1627,10 @@ namespace RT64 {
         }
 
         // Models lit by the RSP (characters and objects) get a sharper and stronger highlight than the scenery.
-        float modelSpecular = 0.5f, modelSpecularExponent = 5.0f, scenerySpecular = 0.5f, scenerySpecularExponent = 5.0f;
-#   if RT_ENABLED
-        modelSpecular = enhancementValue("RT64_RT_MODEL_SPECULAR", 0.45f);
-        modelSpecularExponent = enhancementValue("RT64_RT_MODEL_GLOSS", 28.0f);
-        scenerySpecular = enhancementValue("RT64_RT_SCENERY_SPECULAR", 0.12f);
-        scenerySpecularExponent = enhancementValue("RT64_RT_SCENERY_GLOSS", 6.0f);
-#   endif
+        const float modelSpecular = enhancementValue("RT64_RT_MODEL_SPECULAR", 0.45f);
+        const float modelSpecularExponent = enhancementValue("RT64_RT_MODEL_GLOSS", 28.0f);
+        const float scenerySpecular = enhancementValue("RT64_RT_SCENERY_SPECULAR", 0.12f);
+        const float scenerySpecularExponent = enhancementValue("RT64_RT_SCENERY_GLOSS", 6.0f);
 
         for (uint32_t f = 0; f < workload.fbPairCount; f++) {
             FramebufferPair &fbPair = workload.fbPairs[f];
@@ -1681,12 +1678,10 @@ namespace RT64 {
                 }
             }
 
-#       if RT_ENABLED
             // Debugging: treats every frame as an interior.
             if (enhancementValue("RT64_RT_FORCE_INDOOR", 0.0f) > 0.0f) {
                 skyBackground = false;
             }
-#       endif
 
             for (uint32_t p = 0; p < fbPair.projectionCount; p++) {
                 Projection &proj = fbPair.projections[p];
@@ -1814,24 +1809,15 @@ namespace RT64 {
                         const interop::float4x4 &projMatrix = workload.drawData.projTransforms[proj.transformsIndex];
                         const float worldUpSign = ((viewMatrix[1][1] * projMatrix[1][1]) < 0.0f) ? -1.0f : 1.0f;
                         proj.addPointLight(proj.lightManager.estimatedSunLight(
-#                       if RT_ENABLED
                             enhancementValue("RT64_RT_SUN_INTENSITY", gameConfig.sunLightIntensity),
-#                       else
-                            gameConfig.sunLightIntensity,
-#                       endif
                             gameConfig.sunLightDistance, worldUpSign,
                             gameConfig.sunUsesGameLightDirection,
-#                       if RT_ENABLED
                             enhancementValue("RT64_RT_SUN_AZIMUTH", gameConfig.sunAzimuthDegrees), enhancementValue("RT64_RT_SUN_ELEVATION", gameConfig.sunElevationDegrees),
-#                       else
-                            gameConfig.sunAzimuthDegrees, gameConfig.sunElevationDegrees,
-#                       endif
                             worldViewRotationValid ? worldViewRotation : nullptr));
                     }
 
-#               if RT_ENABLED
                     // Interiors get a soft light carried above the camera instead, like a lantern, so characters and
-                    // the walls around them cast shadows.
+                    // the walls around them cast shadows. Both the path tracer and the enhanced raster lighting use it.
                     const float indoorLightIntensity = enhancementValue("RT64_RT_INDOOR_LIGHT", 1.2f);
                     if (!skyBackground && (indoorLightIntensity > 0.0f)) {
                         const interop::float4x4 &viewMatrix = workload.drawData.viewTransforms[proj.transformsIndex];
@@ -1866,7 +1852,6 @@ namespace RT64 {
                         light.groupBits = 1;
                         proj.addPointLight(light);
                     }
-#               endif
                 }
 
 #if 0
