@@ -1,0 +1,176 @@
+//
+// RT64
+//
+// Enhanced raster lighting: sun shadows and relighting of the opaque surfaces of each 3D projection with classic raster
+// techniques (shadow maps and passes over the depth buffer), as a cheap alternative to the path tracer that runs on any
+// GPU. It only relies on generic data: the matrices of the projection, the lights estimated by the State and the basis
+// of the world provided by the host, so it works the same for any game.
+//
+
+#pragma once
+
+#include <map>
+#include <memory>
+#include <vector>
+
+#include "common/rt64_common.h"
+#include "common/rt64_plume.h"
+#include "shared/rt64_lighting_params.h"
+#include "shared/rt64_point_light.h"
+
+#include "rt64_buffer_uploader.h"
+#include "rt64_descriptor_sets.h"
+#include "rt64_framebuffer_renderer_call.h"
+#include "rt64_render_target.h"
+
+namespace RT64 {
+    struct ShaderLibrary;
+
+    // Global settings of the enhanced lighting, set by the host. Safe to call from any thread.
+    void setRasterLightingEnabled(bool enabled);
+    bool isRasterLightingEnabled();
+
+    // 0 low, 1 medium, 2 high, 3 ultra.
+    void setRasterLightingQuality(int quality);
+    int getRasterLightingQuality();
+
+    struct LightingComposeDescriptorSet : RenderDescriptorSetBase {
+        uint32_t gLightingParams;
+        uint32_t gDepth;
+        uint32_t gShadowMap;
+        uint32_t gShadowSampler;
+
+        LightingComposeDescriptorSet(const RenderSampler *shadowSampler, RenderDevice *device = nullptr) {
+            builder.begin();
+            gLightingParams = builder.addStructuredBuffer(1);
+            gDepth = builder.addTexture(2);
+            gShadowMap = builder.addTexture(3);
+            gShadowSampler = builder.addImmutableSampler(4, shadowSampler);
+            builder.end();
+
+            if (device != nullptr) {
+                create(device);
+            }
+        }
+    };
+
+    // Everything needed to light one projection, in the space the geometry is drawn in.
+    struct LightingSceneDesc {
+        hlslpp::float4x4 viewProj;
+        hlslpp::float4x4 view;
+
+        // Mapping from the pixels of the framebuffer and the depth buffer to the clip space of the projection.
+        hlslpp::float4 pixelToClip;
+        hlslpp::float4 depthToClip;
+
+        // Basis of the world (right, up, forward) and its origin (w = 1 if known) in the space of the geometry.
+        hlslpp::float3 worldRight;
+        hlslpp::float3 worldUp;
+        hlslpp::float3 worldForward;
+        hlslpp::float4 worldOrigin;
+
+        // Lights estimated for the projection.
+        const interop::PointLight *lights = nullptr;
+        uint32_t lightCount = 0;
+
+        // Fog of the game (mul, offset), if any.
+        bool fogEnabled = false;
+        float fogMul = 0.0f;
+        float fogOffset = 0.0f;
+    };
+
+    struct LightingRenderer {
+        struct Scene {
+            interop::LightingParams params;
+            RenderRect rect;
+            RenderTarget *colorTarget = nullptr;
+            RenderTarget *depthTarget = nullptr;
+            hlslpp::float3 cameraPosition;
+            hlslpp::float3 viewDirection;
+            float frustumSlope = 1.0f;
+            bool hasSun = false;
+            hlslpp::float3 sunDirection;
+            hlslpp::float3 worldRight;
+            hlslpp::float3 worldUp;
+            hlslpp::float3 worldForward;
+            hlslpp::float3 worldOrigin;
+        };
+
+        struct Caster {
+            uint32_t instanceIndex;
+            bool alphaTested;
+        };
+
+        struct ComposePipelines {
+            std::unique_ptr<RenderPipeline> multiply;
+            std::unique_ptr<RenderPipeline> copy;
+        };
+
+        RenderDevice *device = nullptr;
+        RenderShaderFormat shaderFormat = RenderShaderFormat::UNKNOWN;
+        std::unique_ptr<RenderSampler> shadowSampler;
+        std::unique_ptr<RenderShader> fullScreenVertexShader;
+        std::unique_ptr<RenderShader> composePixelShader;
+        std::unique_ptr<RenderShader> composePixelShaderMS;
+        std::unique_ptr<RenderPipelineLayout> shadowPipelineLayout;
+        std::unique_ptr<RenderPipeline> shadowOpaquePipeline;
+        std::unique_ptr<RenderPipeline> shadowAlphaPipeline;
+        std::unique_ptr<RenderPipelineLayout> composePipelineLayout;
+        std::map<std::pair<uint32_t, RenderFormat>, ComposePipelines> composePipelines;
+        std::unique_ptr<RenderTexture> shadowMap;
+        std::unique_ptr<RenderTextureView> shadowMapView;
+        std::unique_ptr<RenderFramebuffer> shadowFramebuffer;
+        uint32_t shadowMapSize = 0;
+        bool shadowMapNeedsTransition = false;
+        std::vector<std::unique_ptr<LightingComposeDescriptorSet>> composeSets;
+        BufferPair paramsBuffer;
+        std::vector<Scene> scenes;
+        std::vector<interop::LightingParams> paramsVector;
+        std::vector<Caster> casters;
+        interop::float4x4 shadowMatrix;
+        bool shadowMapActive = false;
+        bool shadowMapRendered = false;
+        uint32_t debugView = 0;
+
+        LightingRenderer(RenderDevice *device, const ShaderLibrary *shaderLibrary, RenderShaderFormat shaderFormat);
+        ~LightingRenderer();
+
+        // Called at the start of each frame before any scene is added.
+        void reset();
+
+        // Adds a projection to light and returns its index.
+        uint32_t addScene(const LightingSceneDesc &desc, RenderTarget *colorTarget, RenderTarget *depthTarget);
+
+        // Grows the region of the framebuffer covered by a scene.
+        void addSceneRect(uint32_t sceneIndex, const RenderRect &rect);
+
+        // Adds a draw call that casts shadows.
+        void addCaster(uint32_t instanceIndex, bool alphaTested);
+
+        // Fits the shadow map and finishes the parameters of the scenes. Adds the upload of the parameters to the list.
+        void finish(RenderWorker *worker, std::vector<BufferUploader::Upload> &uploads);
+
+        // Must be called after the uploads are submitted.
+        void updateDescriptorSets();
+
+        // Draws the shadow casters into the shadow map with the same descriptors the raster shaders use.
+        void recordShadowMap(RenderWorker *worker, RenderDescriptorSet *commonSet, RenderDescriptorSet *textureSet, RenderDescriptorSet *framebufferSet,
+            const RenderVertexBufferView *vertexViews, const RenderInputSlot *inputSlots, uint32_t vertexViewCount, const RenderIndexBufferView *indexView,
+            const std::vector<InstanceDrawCall> &instanceDrawCalls);
+
+        // Lights the color target of a scene. The depth target must be readable (depth read layout).
+        void recordCompose(RenderWorker *worker, uint32_t sceneIndex);
+
+        bool empty() const;
+
+    private:
+        void createShadowMap(RenderWorker *worker, uint32_t size);
+        ComposePipelines &getComposePipelines(const RenderMultisampling &multisampling, RenderFormat format);
+    };
+
+    // Computes a shadow map matrix for an orthographic sun light that covers a sphere around the camera. The light is
+    // aligned to the world (given by its basis and origin in the space of the geometry) and snapped to its texels, so the
+    // shadows don't shimmer when the camera moves or turns. Returns the size of a texel in world units.
+    float computeStableShadowMatrix(const hlslpp::float3 &sunDirection, const hlslpp::float3 &sphereCenter, float sphereRadius, float casterDistance, uint32_t mapSize,
+        const hlslpp::float3 &worldRight, const hlslpp::float3 &worldUp, const hlslpp::float3 &worldForward, const hlslpp::float3 &worldOrigin, interop::float4x4 &shadowMatrix, float &depthRange);
+};

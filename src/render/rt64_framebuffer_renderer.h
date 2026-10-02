@@ -19,9 +19,11 @@
 #include "rt64_buffer_uploader.h"
 #include "rt64_descriptor_sets.h"
 #include "rt64_framebuffer_renderer_call.h"
+#include "rt64_lighting.h"
 #include "rt64_raster_shader_cache.h"
 #include "rt64_render_target.h"
 #include "rt64_rsp_processor.h"
+#include "rt64_tuning.h"
 #include "rt64_vertex_processor.h"
 
 #if RT_ENABLED
@@ -36,12 +38,6 @@ namespace RT64 {
 
     // Whether the sky of outdoor scenes is replaced by a procedural sky with an atmosphere and volumetric clouds.
     void setProceduralSkyEnabled(bool enabled);
-
-#if RT_ENABLED
-    // Value of a visual enhancement of the path tracer, which can be overridden with an environment variable of the
-    // same name or the tuning file RT64_RT_TUNING_FILE. Safe to call from any thread.
-    float enhancementValue(const char *name, float defaultValue);
-#endif
 
     struct DynamicTextureView {
         const RenderTexture *texture = nullptr;
@@ -90,6 +86,7 @@ namespace RT64 {
         std::array<RenderInputSlot, 3> vertexInputSlots;
         std::array<RenderVertexBufferView, 3> indexedVertexViews;
         std::array<RenderVertexBufferView, 3> rawVertexViews;
+        std::array<RenderVertexBufferView, 3> shadowVertexViews;
         RenderIndexBufferView indexBufferView;
         RenderBuffer *testZIndexBuffer = nullptr;
         RenderIndexBufferView testZIndexBufferView;
@@ -116,6 +113,8 @@ namespace RT64 {
         std::unique_ptr<RSPVertexTestZDescriptorSet> vertexTestZSet;
         interop::FrameParams frameParams;
         const ShaderLibrary *shaderLibrary = nullptr;
+        std::unique_ptr<LightingRenderer> lighting;
+        RenderBuffer *worldPosBuffer = nullptr;
 
 #   if RT_ENABLED
         const RenderTexture *blueNoiseTexture = nullptr;
@@ -134,6 +133,7 @@ namespace RT64 {
             std::set<RenderTarget *> transitionRenderTargetSet;
             RenderTargetDrawCall renderTargetDrawCall;
             RenderViewport viewport;
+            bool hasLighting = false;
         };
 
         std::vector<Framebuffer> framebufferVector;
@@ -163,6 +163,8 @@ namespace RT64 {
             bool postBlendNoise;
             bool postBlendNoiseNegative;
             uint32_t maxGameCall;
+            bool lightingEnabled;
+            bool modTransformsValid;
         };
 
         FramebufferRenderer(RenderWorker *worker, bool rtSupport, UserConfiguration::GraphicsAPI graphicsAPI, const ShaderLibrary *shaderLibrary);

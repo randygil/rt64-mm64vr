@@ -18,7 +18,8 @@ namespace RT64 {
             RawTriangles,
             RegularRect,
             FillRect,
-            VertexTestZ
+            VertexTestZ,
+            Lighting
         };
 
         Type type;
@@ -53,6 +54,10 @@ namespace RT64 {
             } clearRect;
 
             interop::RSPVertexTestZCB vertexTestZ;
+
+            struct {
+                uint32_t sceneIndex;
+            } lighting;
         };
 
         InstanceDrawCall() {

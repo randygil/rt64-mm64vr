@@ -14,6 +14,8 @@
 
 #include "../include/rt64_extended_gbi.h"
 
+#include "shared/rt64_blender.h"
+
 #include "common/rt64_elapsed_timer.h"
 #include "common/rt64_math.h"
 #include "hle/rt64_color_converter.h"
@@ -145,7 +147,6 @@ namespace RT64 {
         proceduralSkyEnabled = enabled;
     }
 
-#if RT_ENABLED
     // Values of the visual enhancements. They can be overridden with environment variables or with the file pointed
     // by RT64_RT_TUNING_FILE, which uses one "NAME value" pair per line and is reloaded whenever it changes.
     float enhancementValue(const char *name, float defaultValue) {
@@ -178,7 +179,6 @@ namespace RT64 {
         const char *value = getenv(name);
         return (value != nullptr) ? float(atof(value)) : defaultValue;
     }
-#endif
     
     RenderRect convertFixedRect(FixedRect rect, hlslpp::float2 resScale, int32_t fbWidth, float aspectRatioScale, float extOriginPercentage, int32_t horizontalMisalignment, uint16_t leftOrigin, uint16_t rightOrigin) {
         if (!rect.isNull()) {
@@ -280,6 +280,19 @@ namespace RT64 {
         shaderUploader = std::make_unique<BufferUploader>(worker->device);
         descCommonSet = std::make_unique<FramebufferRendererDescriptorCommonSet>(shaderLibrary->samplerLibrary, worker->device->getCapabilities().raytracing, worker->device);
 
+        // Only the main renderer (the one that supports raytracing) draws the enhanced lighting.
+        if (rtSupport) {
+            RenderShaderFormat shaderFormat = RenderShaderFormat::SPIRV;
+            if (graphicsAPI == UserConfiguration::GraphicsAPI::D3D12) {
+                shaderFormat = RenderShaderFormat::DXIL;
+            }
+            else if (graphicsAPI == UserConfiguration::GraphicsAPI::Metal) {
+                shaderFormat = RenderShaderFormat::METAL;
+            }
+
+            lighting = std::make_unique<LightingRenderer>(worker->device, shaderLibrary, shaderFormat);
+        }
+
 #   if RT_ENABLED
         if (rtSupport) {
             this->rtSupport = rtSupport;
@@ -300,6 +313,10 @@ namespace RT64 {
         hitGroupVector.clear();
         renderIndicesVector.clear();
         rspSmoothNormalVector.clear();
+        if (lighting != nullptr) {
+            lighting->reset();
+        }
+
         frameParams.viewUbershaders = ubershadersVisible;
         frameParams.ditherNoiseStrength = ditherNoiseStrength;
         framebufferCount = 0;
@@ -747,6 +764,17 @@ namespace RT64 {
                 }
                 else {
                     worker->commandList->clearDepth(true, clearRect.depth, clearRects, clearRectCount);
+                }
+
+                break;
+            };
+            case InstanceDrawCall::Type::Lighting: {
+                if ((lighting != nullptr) && (fbStorage->colorTarget != nullptr)) {
+                    // The lighting reads the depth buffer, so it's switched to the read only layout first.
+                    submitDepthAccess(worker, fbStorage, true, depthState);
+                    lighting->recordCompose(worker, drawCall.lighting.sceneIndex);
+                    worker->commandList->setFramebuffer(fbStorage->colorWriteDepthRead.get());
+                    switchToGraphicsPipeline();
                 }
 
                 break;
@@ -1616,6 +1644,16 @@ namespace RT64 {
         startBarriers.emplace_back(RenderTextureBarrier(depthTarget->texture.get(), RenderTextureLayout::DEPTH_WRITE));
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS, startBarriers);
 
+        // The shadow map of the enhanced lighting is drawn before the framebuffer that uses it.
+        if ((lighting != nullptr) && framebuffer.hasLighting) {
+            if (worldPosBuffer != nullptr) {
+                worker->commandList->barriers(RenderBarrierStage::GRAPHICS, RenderBufferBarrier(worldPosBuffer, RenderBufferAccess::READ));
+            }
+
+            lighting->recordShadowMap(worker, descCommonSet->get(), descTextureSet->get(), framebuffer.descDummyFbSet->get(), shadowVertexViews.data(), vertexInputSlots.data(),
+                uint32_t(shadowVertexViews.size()), &indexBufferView, instanceDrawCallVector);
+        }
+
         bool depthState = false;
         worker->commandList->setFramebuffer(targetDrawCall.fbStorage->colorDepthWrite.get());
         for (const auto &pair : targetDrawCall.sceneIndices) {
@@ -1759,6 +1797,11 @@ namespace RT64 {
         rawVertexViews[2] = RenderVertexBufferView(RenderBufferReference(triColRes), ColStride * rawTriVertexCount);
         testZIndexBuffer = outputBuffers.testZIndexBuffer.buffer.get();
         testZIndexBufferView = RenderIndexBufferView(testZIndexBuffer, uint32_t(outputBuffers.testZIndexBuffer.allocatedSize), RenderFormat::R32_UINT);
+        shadowVertexViews[0] = RenderVertexBufferView(RenderBufferReference(worldPosRes), PosStride * vertexCount);
+        shadowVertexViews[1] = indexedVertexViews[1];
+        shadowVertexViews[2] = indexedVertexViews[2];
+        worldPosBuffer = outputBuffers.worldPosBuffer.buffer.get();
+        framebuffer.hasLighting = false;
 
         RasterScene rasterScene;
         auto checkRasterScene = [&](RasterScene &rasterScene) {
@@ -1818,6 +1861,35 @@ namespace RT64 {
         uint32_t vertexTestZFaceIndicesStart = 0;
         int32_t vertexTestZCallIndex = -1;
         RenderViewport viewportClip;
+
+        // Enhanced lighting: the opaque draw calls of each 3D projection are drawn first, then the lighting is composed
+        // over them and the translucent ones are drawn afterwards in their original order, so they aren't darkened.
+        const bool lightingActive = p.lightingEnabled && (lighting != nullptr) && (p.fbStorage->colorTarget != nullptr) && (p.fbStorage->depthTarget != nullptr) && fbPair.depthWrite;
+        int32_t lightingSceneIndex = -1;
+        interop::float4x4 lightingViewProj;
+        thread_local std::vector<uint32_t> lightingDeferred;
+        thread_local std::vector<interop::float4x4> lightingLitViewProjs;
+        lightingDeferred.clear();
+        lightingLitViewProjs.clear();
+        auto closeLightingScene = [&]() {
+            if (lightingSceneIndex < 0) {
+                return;
+            }
+
+            InstanceDrawCall markerDrawCall;
+            markerDrawCall.type = InstanceDrawCall::Type::Lighting;
+            markerDrawCall.lighting.sceneIndex = uint32_t(lightingSceneIndex);
+            interop::RenderIndices markerIndices = {};
+            renderIndicesVector.push_back(markerIndices);
+            rasterScene.instanceIndices.push_back(uint32_t(instanceDrawCallVector.size()));
+            instanceDrawCallVector.push_back(markerDrawCall);
+            rasterScene.instanceIndices.insert(rasterScene.instanceIndices.end(), lightingDeferred.begin(), lightingDeferred.end());
+            lightingDeferred.clear();
+            lightingLitViewProjs.push_back(lightingViewProj);
+            lightingSceneIndex = -1;
+            framebuffer.hasLighting = true;
+        };
+
         for (uint32_t pr = 0; (pr < fbPair.projectionCount) && (globalCallIndex < p.maxGameCall); pr++) {
             const Projection &proj = fbPair.projections[pr];
             if (proj.scissorRect.isNull()) {
@@ -1874,8 +1946,83 @@ namespace RT64 {
                 viewportClip = convertViewportRect(viewport.rect(viewportClipRatios), p.resolutionScale, p.fbWidth, projInvRatioScale, extOriginPercentage, 0.0f, viewportOrigin, viewportOrigin);
             }
 
+            if (lightingActive) {
+                const bool lightingProj = (proj.type == Projection::Type::Perspective) && proj.usesViewport();
+                const interop::float4x4 &projViewProj = p.modTransformsValid ? drawData.modViewProjTransforms[proj.transformsIndex] : drawData.viewProjTransforms[proj.transformsIndex];
+                if ((lightingSceneIndex >= 0) && (!lightingProj || (matrixDifference(projViewProj, lightingViewProj) > 1e-6f))) {
+                    closeLightingScene();
+                }
+
+                // A projection that was already lit in this framebuffer isn't lit again, as its pixels would be lit twice.
+                bool alreadyLit = false;
+                for (const interop::float4x4 &litViewProj : lightingLitViewProjs) {
+                    alreadyLit = alreadyLit || (matrixDifference(projViewProj, litViewProj) <= 1e-6f);
+                }
+
+                const interop::RSPViewport &rspViewport = drawData.rspViewports[proj.transformsIndex];
+                const bool validViewport = (fabsf(rspViewport.scale.x) > 1e-6f) && (fabsf(rspViewport.scale.y) > 1e-6f) && (fabsf(rspViewport.scale.z) > 1e-8f);
+                if (lightingProj && (lightingSceneIndex < 0) && !alreadyLit && validViewport) {
+                    // Inverse of the transformations done by the RSP and the raster vertex shader, from the pixels of the
+                    // framebuffer to the clip space of the projection.
+                    const float resolutionX = float(p.targetWidth) / p.resolutionScale.x;
+                    const float resolutionY = float(p.targetHeight) / p.resolutionScale.y;
+                    const interop::float2 screenScale = triangles.screenScale;
+                    const interop::float2 screenOffset = triangles.screenOffset;
+                    auto pixelToClipX = [&](float pixelX) {
+                        const float ndc = (pixelX / framebuffer.viewport.width) * 2.0f - 1.0f;
+                        const float screen = ((ndc - screenOffset.x) / screenScale.x) * (resolutionX * 0.5f) + resolutionX * 0.5f;
+                        return (screen - rspViewport.translate.x) / rspViewport.scale.x;
+                    };
+
+                    auto pixelToClipY = [&](float pixelY) {
+                        const float ndc = 1.0f - (pixelY / framebuffer.viewport.height) * 2.0f;
+                        const float screen = ((ndc - screenOffset.y) / screenScale.y) * (resolutionY * -0.5f) + resolutionY * 0.5f;
+                        return -(screen - rspViewport.translate.y) / rspViewport.scale.y;
+                    };
+
+                    LightingSceneDesc sceneDesc;
+                    sceneDesc.viewProj = projViewProj;
+                    sceneDesc.view = p.modTransformsValid ? drawData.modViewTransforms[proj.transformsIndex] : drawData.viewTransforms[proj.transformsIndex];
+                    sceneDesc.pixelToClip = hlslpp::float4(pixelToClipX(1.0f) - pixelToClipX(0.0f), pixelToClipY(1.0f) - pixelToClipY(0.0f), pixelToClipX(0.0f), pixelToClipY(0.0f));
+                    const float maxDepth = std::min(rspViewport.translate.z + rspViewport.scale.z, 1.0f);
+                    sceneDesc.depthToClip = hlslpp::float4(1.0f / rspViewport.scale.z, -rspViewport.translate.z / rspViewport.scale.z, maxDepth * enhancementValue("RT64_LIGHT_BACKGROUND_DEPTH", 0.99995f), 0.0f);
+                    sceneDesc.worldRight = p.curWorkload->worldRight;
+                    sceneDesc.worldUp = p.curWorkload->worldUp;
+                    sceneDesc.worldForward = p.curWorkload->worldForward;
+                    sceneDesc.worldOrigin = p.curWorkload->worldOrigin;
+                    sceneDesc.lights = (proj.pointLightCount > 0) ? proj.pointLights.data() : nullptr;
+                    sceneDesc.lightCount = proj.pointLightCount;
+
+                    // The fog of the game, taken from the first draw call that uses it.
+                    for (uint32_t d = 0; d < proj.gameCallCount; d++) {
+                        const GameCall &fogCall = proj.gameCalls[d];
+                        const uint32_t faceStart = fogCall.meshDesc.faceIndicesStart;
+                        if ((fogCall.callDesc.triangleCount == 0) || (faceStart >= drawData.faceIndices.size())) {
+                            continue;
+                        }
+
+                        const uint32_t vertexIndex = drawData.faceIndices[faceStart];
+                        if (vertexIndex >= drawData.fogIndices.size()) {
+                            continue;
+                        }
+
+                        const uint32_t fogIndex = drawData.fogIndices[vertexIndex];
+                        if ((fogIndex > 0) && ((fogIndex - 1) < drawData.rspFog.size())) {
+                            sceneDesc.fogEnabled = true;
+                            sceneDesc.fogMul = drawData.rspFog[fogIndex - 1].mul;
+                            sceneDesc.fogOffset = drawData.rspFog[fogIndex - 1].offset;
+                            break;
+                        }
+                    }
+
+                    lightingSceneIndex = int32_t(lighting->addScene(sceneDesc, p.fbStorage->colorTarget, p.fbStorage->depthTarget));
+                    lightingViewProj = projViewProj;
+                }
+            }
+
             for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
                 const GameCall &call = proj.gameCalls[d];
+                bool lightingDeferredCall = false;
                 renderIndices.instanceIndex = call.callDesc.callIndex;
                 renderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
                 renderIndices.rdpTileIndex = call.callDesc.tileIndex;
@@ -2069,6 +2216,19 @@ namespace RT64 {
                             instanceDrawCallVector[vertexTestZCallIndex].vertexTestZ.indexCount += call.callDesc.triangleCount * 3;
                             vertexTestZFaceIndicesStart += call.callDesc.triangleCount * 3;
                         }
+
+                        if ((lightingSceneIndex >= 0) && (instanceDrawCall.type == InstanceDrawCall::Type::IndexedTriangles)) {
+                            const interop::OtherMode &otherMode = call.shaderDesc.otherMode;
+                            const bool copyMode = (otherMode.cycleType() == G_CYC_COPY);
+                            lighting->addSceneRect(uint32_t(lightingSceneIndex), triangles.scissor);
+                            if (!copyMode && interop::Blender::usesAlphaBlend(otherMode)) {
+                                lightingDeferredCall = true;
+                            }
+                            else if (!copyMode && otherMode.zUpd() && (otherMode.zMode() != ZMODE_DEC) && !triangles.vertexTestZ && !triangles.scissor.isEmpty()) {
+                                const bool alphaTested = otherMode.cvgXAlpha() || (otherMode.alphaCompare() != G_AC_NONE);
+                                lighting->addCaster(uint32_t(instanceDrawCallVector.size()), alphaTested);
+                            }
+                        }
                     }
                 }
 
@@ -2138,7 +2298,10 @@ namespace RT64 {
                 }
                 else 
 #           endif
-                {
+                if (lightingDeferredCall) {
+                    lightingDeferred.push_back(instanceIndex);
+                }
+                else {
                     rasterScene.instanceIndices.push_back(instanceIndex);
                 }
 
@@ -2146,6 +2309,8 @@ namespace RT64 {
                 globalCallIndex++;
             }
         }
+
+        closeLightingScene();
 
 #   if RT_ENABLED
         checkRtScene(rtScene);
@@ -2225,8 +2390,16 @@ namespace RT64 {
         }
 #   endif
 
+        if (lighting != nullptr) {
+            lighting->finish(worker, shaderUploads);
+        }
+
         shaderUploader->submit(worker, shaderUploads);
         updateShaderViews(worker, drawBuffers, outputBuffers, shaderViewRtEnabled);
+
+        if (lighting != nullptr) {
+            lighting->updateDescriptorSets();
+        }
 
 #   if RT_ENABLED
         // The shader binding table must be built after the descriptor sets are updated, as some backends store the

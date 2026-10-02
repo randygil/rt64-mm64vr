@@ -387,7 +387,9 @@ namespace RT64 {
                 rspProcessor->process(rspParams);
             }
 
-            const bool processWorldVertices = prevFrame.matched;
+            // The enhanced lighting draws the shadow casters with their positions in world space.
+            const bool lightingActive = isRasterLightingEnabled() && !workloadConfig.raytracingEnabled;
+            const bool processWorldVertices = prevFrame.matched || lightingActive;
             if (processWorldVertices) {
                 workload.resetWorldOutputBuffers();
 
@@ -639,6 +641,8 @@ namespace RT64 {
                     drawParams.postBlendNoise = workloadConfig.postBlendNoise;
                     drawParams.postBlendNoiseNegative = workloadConfig.postBlendNoiseNegative;
                     drawParams.maxGameCall = std::min(gameCallCountMax - gameCallCursor, fbPair.gameCallCount);
+                    drawParams.lightingEnabled = lightingActive;
+                    drawParams.modTransformsValid = processProjections;
                     framebufferRenderer->addFramebuffer(drawParams);
                 }
                 

@@ -436,6 +436,8 @@ set (SOURCES
     "${PROJECT_SOURCE_DIR}/src/contrib/miniz/miniz.c"
 )
 
+list(APPEND SOURCES "${PROJECT_SOURCE_DIR}/src/render/rt64_lighting.cpp")
+
 if (RT64_RAYTRACING)
     list(APPEND SOURCES
         "${PROJECT_SOURCE_DIR}/src/render/rt64_raytracing_resources.cpp"
@@ -591,6 +593,20 @@ build_pixel_shader(  rt64 "src/shaders/ComposePS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/DebugPS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/Im3DPS.hlsl")
 build_pixel_shader(  rt64 "src/shaders/PostProcessPS.hlsl")
+build_vertex_shader( rt64 "src/shaders/LightingShadowVS.hlsl")
+build_pixel_shader(  rt64 "src/shaders/LightingShadowPS.hlsl")
+build_pixel_shader(  rt64 "src/shaders/LightingComposePS.hlsl")
+build_pixel_shader(  rt64 "src/shaders/LightingComposePS.hlsl" "src/shaders/LightingComposePSMS.hlsl" "-D MULTISAMPLING")
+
+# The lighting shaders read the shared parameter headers and helpers, so they're rebuilt whenever those change.
+file(GLOB RT64_LIGHTING_SHADER_DEPENDS "${PROJECT_SOURCE_DIR}/src/shaders/*.hlsli" "${PROJECT_SOURCE_DIR}/src/shared/*.h")
+foreach(RT64_LIGHTING_SHADER LightingShadowVS LightingShadowPS LightingComposePS LightingComposePSMS)
+    set(RT64_LIGHTING_SHADER_OUTPUT "${CMAKE_BINARY_DIR}/src/shaders/${RT64_LIGHTING_SHADER}.hlsl")
+    add_custom_command(OUTPUT "${RT64_LIGHTING_SHADER_OUTPUT}.spv" APPEND DEPENDS ${RT64_LIGHTING_SHADER_DEPENDS})
+    if (WIN32)
+        add_custom_command(OUTPUT "${RT64_LIGHTING_SHADER_OUTPUT}.dxil" APPEND DEPENDS ${RT64_LIGHTING_SHADER_DEPENDS})
+    endif()
+endforeach()
 
 if (RT64_RAYTRACING)
     build_ray_shader(rt64 "src/shaders/RaytracingLibrary.hlsl")
