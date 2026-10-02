@@ -277,6 +277,7 @@ namespace RT64 {
         std::unique_ptr<RenderShader> copyPixelShaderMS;
         std::map<std::pair<uint32_t, RenderFormat>, std::unique_ptr<RenderPipeline>> copyPipelines;
         std::vector<std::unique_ptr<LightingCopyDescriptorSet>> copySets;
+        uint32_t copySetCursor = 0;
         std::unique_ptr<RenderTexture> colorCopyTexture;
         std::unique_ptr<RenderFramebuffer> colorCopyFramebuffer;
         uint32_t colorCopyWidth = 0;

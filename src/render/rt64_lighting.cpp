@@ -465,11 +465,13 @@ namespace RT64 {
             pipeline = device->createGraphicsPipeline(pipelineDesc);
         }
 
-        while (copySets.size() <= sceneIndex) {
+        // Every copy of the frame gets its own descriptor set: updating one that an earlier copy of the same frame already
+        // bound would invalidate the command list on Vulkan.
+        while (copySets.size() <= copySetCursor) {
             copySets.emplace_back(std::make_unique<LightingCopyDescriptorSet>(device));
         }
 
-        LightingCopyDescriptorSet *copySet = copySets[sceneIndex].get();
+        LightingCopyDescriptorSet *copySet = copySets[copySetCursor++].get();
         copySet->setTexture(copySet->gInput, colorTarget->texture.get(), RenderTextureLayout::SHADER_READ, colorTarget->textureView.get());
         worker->commandList->barriers(RenderBarrierStage::GRAPHICS, {
             RenderTextureBarrier(colorTarget->texture.get(), RenderTextureLayout::SHADER_READ),
@@ -542,6 +544,7 @@ namespace RT64 {
         paramsVector.clear();
         shadowMapActive = false;
         shadowMapRendered = false;
+        copySetCursor = 0;
     }
 
     uint32_t LightingRenderer::addScene(const LightingSceneDesc &desc, RenderTarget *colorTarget, RenderTarget *depthTarget) {
