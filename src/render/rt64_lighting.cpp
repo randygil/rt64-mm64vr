@@ -339,8 +339,9 @@ namespace RT64 {
             }
 
             // Variants that draw consecutive draw calls together, finding the parameters of each triangle in a buffer
-            // with the index of the primitive (which also needs geometry shader support).
-            if (foliageNormalsSupported) {
+            // with the index of the primitive (which also needs geometry shader support). They bind five descriptor
+            // sets: drivers that only take four (Quest 2) corrupt their stack when creating the layout.
+            if (foliageNormalsSupported && (device->getCapabilities().maxDescriptorSets >= 5)) {
                 LightingTriangleDrawSet triangleDrawSetDesc;
                 layoutBuilder.begin(false, true);
                 layoutBuilder.addPushConstant(0, 0, sizeof(interop::LightingShadowCB), RenderShaderStageFlag::VERTEX | RenderShaderStageFlag::PIXEL);
