@@ -63,6 +63,15 @@ namespace RT64 {
         rdp = std::make_unique<RDP>(this);
 
         reset();
+
+        // Development: RT64_DUMP_TEXTURES names a directory to dump every new texture into from the start, like the
+        // inspector's "Start dumping textures", for scripted runs that collect the textures a game builds at runtime.
+        const char *dumpDirectory = getenv("RT64_DUMP_TEXTURES");
+        if ((dumpDirectory != nullptr) && (dumpDirectory[0] != '\0')) {
+            dumpingTexturesDirectory = std::filesystem::u8path(dumpDirectory);
+            std::error_code ec;
+            std::filesystem::create_directories(dumpingTexturesDirectory, ec);
+        }
     }
 
     State::~State() { }
