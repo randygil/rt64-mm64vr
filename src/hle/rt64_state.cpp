@@ -1827,9 +1827,10 @@ namespace RT64 {
                             worldViewRotationValid ? worldViewRotation : nullptr));
                     }
 
-                    // Interiors get a soft light carried above the camera instead, like a lantern, so characters and
-                    // the walls around them cast shadows. Both the path tracer and the enhanced raster lighting use it.
-                    const float indoorLightIntensity = enhancementValue("RT64_RT_INDOOR_LIGHT", 1.2f);
+                    // A soft light carried above the camera, like a lantern, can light interiors so characters and the
+                    // walls around them cast shadows. Off by default: in bright interiors like a covered market the
+                    // shadows ran away from the player, as if he were the lamp, and swung around as he walked.
+                    const float indoorLightIntensity = enhancementValue("RT64_RT_INDOOR_LIGHT", 0.0f);
                     if (!skyBackground && (indoorLightIntensity > 0.0f)) {
                         const interop::float4x4 &viewMatrix = workload.drawData.viewTransforms[proj.transformsIndex];
                         const hlslpp::float4x4 invViewMatrix = hlslpp::inverse(viewMatrix);

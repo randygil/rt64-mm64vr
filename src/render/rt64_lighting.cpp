@@ -685,9 +685,10 @@ namespace RT64 {
             params.groundColor = hlslpp::float4(enhancementValue("RT64_LIGHT_GROUND_R", 0.50f), enhancementValue("RT64_LIGHT_GROUND_G", 0.47f), enhancementValue("RT64_LIGHT_GROUND_B", 0.42f), 0.0f);
         }
         else {
-            // A slightly cool ambient against the warm light carried with the camera.
-            const float indoorAmbient = enhancementValue("RT64_LIGHT_INDOOR_AMBIENT", 0.72f);
-            const hlslpp::float3 indoorTint(enhancementValue("RT64_LIGHT_INDOOR_TINT_R", 0.94f), enhancementValue("RT64_LIGHT_INDOOR_TINT_G", 1.0f), enhancementValue("RT64_LIGHT_INDOOR_TINT_B", 1.08f));
+            // An even, almost neutral ambient: interiors have no light of their own by default (see RT64_RT_INDOOR_LIGHT),
+            // so the ambient occlusion and the contact shadows give them their depth.
+            const float indoorAmbient = enhancementValue("RT64_LIGHT_INDOOR_AMBIENT", 0.9f);
+            const hlslpp::float3 indoorTint(enhancementValue("RT64_LIGHT_INDOOR_TINT_R", 0.97f), enhancementValue("RT64_LIGHT_INDOOR_TINT_G", 1.0f), enhancementValue("RT64_LIGHT_INDOOR_TINT_B", 1.03f));
             params.ambientColor = hlslpp::float4(indoorTint * indoorAmbient, 0.0f);
             const float indoorGround = indoorAmbient * enhancementValue("RT64_LIGHT_INDOOR_GROUND", 0.85f);
             params.groundColor = hlslpp::float4(indoorTint * indoorGround, 0.0f);
