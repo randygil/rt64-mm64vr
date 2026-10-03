@@ -15,6 +15,9 @@
 
 [[vk::push_constant]] ConstantBuffer<LightingComposeCB> gConstants : register(b0, space0);
 StructuredBuffer<LightingParams> gLightingParams : register(t1, space0);
+// The parameters of this scene (the same as gLightingParams[sceneIndex]): read from a constant buffer, which mobile GPUs
+// keep in their uniform memory. Copying the structure out of the storage buffer in every pixel was very slow there.
+ConstantBuffer<LightingParams> gSceneParams : register(b11, space0);
 #ifdef MULTISAMPLING
 Texture2DMS<float> gDepth : register(t2, space0);
 #else
@@ -322,7 +325,7 @@ float4 PSMain(in float4 pixelPosition : SV_POSITION
 #endif
     ) : SV_TARGET
 {
-    const LightingParams params = gLightingParams[gConstants.sceneIndex];
+    const LightingParams params = gSceneParams;
     const int2 pixel = int2(pixelPosition.xy);
     if (any(pixelPosition.xy < params.viewportRect.xy) || any(pixelPosition.xy >= params.viewportRect.zw)) {
         discard;

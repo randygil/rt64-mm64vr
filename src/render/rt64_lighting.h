@@ -51,6 +51,7 @@ namespace RT64 {
         uint32_t gSceneColor;
         uint32_t gEmissiveLight;
         uint32_t gPointShadowMap;
+        uint32_t gSceneParams;
 
         LightingComposeDescriptorSet(const RenderSampler *shadowSampler, RenderDevice *device = nullptr) {
             builder.begin();
@@ -64,6 +65,7 @@ namespace RT64 {
             gSceneColor = builder.addTexture(8);
             gEmissiveLight = builder.addTexture(9);
             gPointShadowMap = builder.addTexture(10);
+            gSceneParams = builder.addConstantBuffer(11);
             builder.end();
 
             if (device != nullptr) {
@@ -322,6 +324,16 @@ namespace RT64 {
         interop::float4x4 pointShadowMatrices[6];
         std::vector<std::unique_ptr<LightingComposeDescriptorSet>> composeSets;
         BufferPair paramsBuffer;
+
+        // The parameters of each scene again, as a constant buffer of its own for the composition (see finish). Padded to
+        // a multiple of 256 bytes, the size D3D12 rounds constant buffer views up to.
+        struct SceneParamsCB {
+            interop::LightingParams params;
+            interop::float4 padding[(256 - (sizeof(interop::LightingParams) % 256)) % 256 / sizeof(interop::float4)];
+        };
+
+        std::vector<SceneParamsCB> sceneParamsVector;
+        std::vector<BufferPair> sceneParamsBuffers;
         std::vector<Scene> scenes;
         std::vector<interop::LightingParams> paramsVector;
         std::vector<Caster> casters;

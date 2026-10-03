@@ -887,8 +887,13 @@ namespace RT64 {
             }
         }
 
+        // Low leaves the alpha tested casters (foliage) out of the shadows: they sample their textures like the RDP does,
+        // which took ~14 ms of a Quest 2 frame. Drawing them as opaque instead would cast the rectangles of their cards.
         const uint32_t casterSceneIndex = (sunSceneIndex != UINT32_MAX) ? sunSceneIndex : pointSceneIndex;
-        casters.erase(std::remove_if(casters.begin(), casters.end(), [&](const Caster &caster) { return caster.sceneIndex != casterSceneIndex; }), casters.end());
+        const bool foliageCasters = rasterLightingExtrasEnabled();
+        casters.erase(std::remove_if(casters.begin(), casters.end(), [&](const Caster &caster) {
+            return (caster.sceneIndex != casterSceneIndex) || (caster.alphaTested && !foliageCasters);
+        }), casters.end());
 
         // Parameters of each triangle of the draw calls drawn again by the shadow and normal passes.
         if (mergedDraws) {
@@ -1079,6 +1084,19 @@ namespace RT64 {
 
         uploads.push_back({ paramsVector.data(), { 0, paramsVector.size() }, sizeof(interop::LightingParams), RenderBufferFlag::STORAGE, { }, &paramsBuffer });
 
+        // The composition reads the parameters of its scene from a constant buffer of its own: copying the whole structure
+        // out of the storage buffer for every pixel took ~42 ms of a Quest 2 frame (mobile GPUs keep constant buffers in
+        // their uniform memory instead).
+        if (sceneParamsBuffers.size() < paramsVector.size()) {
+            sceneParamsBuffers.resize(paramsVector.size());
+        }
+
+        sceneParamsVector.resize(paramsVector.size());
+        for (size_t i = 0; i < paramsVector.size(); i++) {
+            sceneParamsVector[i].params = paramsVector[i];
+            uploads.push_back({ &sceneParamsVector[i], { 0, 1 }, sizeof(SceneParamsCB), RenderBufferFlag::CONSTANT, { }, &sceneParamsBuffers[i] });
+        }
+
         static const bool printScenes = (getenv("RT64_LIGHT_PRINT") != nullptr);
         static uint32_t printCounter = 0;
         const uint32_t printInterval = std::max(uint32_t(enhancementValue("RT64_LIGHT_PRINT_INTERVAL", 120.0f)), 1U);
@@ -1111,6 +1129,7 @@ namespace RT64 {
             set->setTexture(set->gSceneColor, colorCopyTexture.get(), RenderTextureLayout::SHADER_READ);
             set->setTexture(set->gEmissiveLight, emissiveTextures[0].get(), RenderTextureLayout::SHADER_READ);
             set->setTexture(set->gPointShadowMap, pointShadowMap.get(), RenderTextureLayout::DEPTH_READ, pointShadowMapView.get());
+            set->setBuffer(set->gSceneParams, sceneParamsBuffers[i].get(), sizeof(SceneParamsCB));
         }
 
         while (emissiveSets.size() < scenes.size()) {
