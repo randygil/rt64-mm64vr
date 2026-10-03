@@ -189,7 +189,8 @@ namespace RT64 {
         const bool anyEffect = (s.bloomStrength > 0.0f) || (s.shaftsStrength > 0.0f) || (s.sharpen > 0.0f) || (s.contrast != 0.0f) ||
             (s.vibrance != 0.0f) || (s.saturation != 0.0f) || (s.temperature != 0.0f) || (s.vignette > 0.0f);
 
-        s.enabled = anyEffect && (enhancementValue("RT64_POST_ENABLE", 1.0f) > 0.0f);
+        // Low leaves the post effects out, like the sky and the normal buffer (rasterLightingExtrasEnabled).
+        s.enabled = anyEffect && rasterLightingExtrasEnabled() && (enhancementValue("RT64_POST_ENABLE", 1.0f) > 0.0f);
         return s;
     }
 

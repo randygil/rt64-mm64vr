@@ -36,6 +36,10 @@ namespace RT64 {
     void setRasterLightingQuality(int quality);
     int getRasterLightingQuality();
 
+    // Whether the passes that cost the most on weak GPUs run: the normal buffer, the procedural sky and the post effects.
+    // Low leaves them out (standalone VR headsets and integrated GPUs); RT64_LIGHT_LOW_EXTRAS 1 keeps them to compare.
+    bool rasterLightingExtrasEnabled();
+
     struct LightingComposeDescriptorSet : RenderDescriptorSetBase {
         uint32_t gLightingParams;
         uint32_t gDepth;

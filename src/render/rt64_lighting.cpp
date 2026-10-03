@@ -130,6 +130,10 @@ namespace RT64 {
         return (overrideQuality >= 0) ? std::min(overrideQuality, 3) : int(rasterLightingQuality);
     }
 
+    bool rasterLightingExtrasEnabled() {
+        return (getRasterLightingQuality() >= 1) || (enhancementValue("RT64_LIGHT_LOW_EXTRAS", 0.0f) > 0.0f);
+    }
+
     static float dot3(const hlslpp::float3 &a, const hlslpp::float3 &b) {
         return float(hlslpp::dot(a, b));
     }
@@ -568,7 +572,8 @@ namespace RT64 {
     LightingRenderer::~LightingRenderer() { }
 
     void LightingRenderer::reset() {
-        gbufferEnabled = (enhancementValue("RT64_LIGHT_GBUFFER", 1.0f) > 0.0f);
+        // Without the normal buffer, the composition takes the normals from the depth buffer.
+        gbufferEnabled = rasterLightingExtrasEnabled() && (enhancementValue("RT64_LIGHT_GBUFFER", 1.0f) > 0.0f);
         mergedDraws = (shadowMergedPipeline != nullptr) && (enhancementValue("RT64_LIGHT_MERGE_DRAWS", 1.0f) > 0.0f);
         bumpEnabled = (getRasterLightingQuality() >= 1) && (enhancementValue("RT64_LIGHT_BUMP", 0.0f) > 0.0f);
         scenes.clear();
