@@ -631,7 +631,21 @@ namespace RT64 {
         }
 
         scene.worldOrigin = (float(desc.worldOrigin.w) > 0.0f) ? desc.worldOrigin.xyz : hlslpp::float3(0.0f, 0.0f, 0.0f);
-        scene.focusPosition = desc.focusPosition;
+
+        // The lights and the focus were placed in the space of the game frame's geometry; a frame interpolated between two
+        // game frames draws it elsewhere (the camera is applied to it), so they're moved along through the world.
+        auto toDrawnFrame = [&](const hlslpp::float3 &v, bool position) {
+            if (!desc.worldInterpolated) {
+                return v;
+            }
+
+            const hlslpp::float3 relative = position ? (v - desc.gameWorldOrigin.xyz) : v;
+            const hlslpp::float3 world(dot3(relative, desc.gameWorldRight), dot3(relative, desc.gameWorldUp), dot3(relative, desc.gameWorldForward));
+            const hlslpp::float3 drawn = desc.worldRight * float(world.x) + desc.worldUp * float(world.y) + desc.worldForward * float(world.z);
+            return position ? (drawn + desc.worldOrigin.xyz) : drawn;
+        };
+
+        scene.focusPosition = (float(desc.focusPosition.w) > 0.0f) ? hlslpp::float4(toDrawnFrame(desc.focusPosition.xyz, true), 1.0f) : desc.focusPosition;
         params.worldRight = hlslpp::float4(scene.worldRight, 0.0f);
         params.worldUp = hlslpp::float4(scene.worldUp, 0.0f);
         params.worldForward = hlslpp::float4(scene.worldForward, 0.0f);
@@ -641,8 +655,9 @@ namespace RT64 {
         const float sunStrength = enhancementValue("RT64_LIGHT_SUN", 0.9f);
         for (uint32_t i = 0; i < desc.lightCount; i++) {
             const interop::PointLight &light = desc.lights[i];
-            const hlslpp::float3 position(light.position.x, light.position.y, light.position.z);
-            const float distance = length3(position);
+            const hlslpp::float3 gamePosition(light.position.x, light.position.y, light.position.z);
+            const float distance = length3(gamePosition);
+            const hlslpp::float3 position = toDrawnFrame(gamePosition, distance <= 1e6f);
             if (distance > 1e6f) {
                 if (!scene.hasSun) {
                     scene.hasSun = true;
@@ -993,31 +1008,15 @@ namespace RT64 {
         float depthRange = 1.0f;
         shadowMapActive = (sunScene != nullptr) && !casters.empty() && (shadowStrength > 0.0f);
         if (shadowMapActive) {
-            // Bounding sphere of the part of the view frustum that receives shadows, with its center along the view
-            // direction where the sphere is the smallest. Its size only depends on the field of view, so it stays the
-            // same while the camera turns and the texels keep their size.
-            float shadowDistance = enhancementValue("RT64_LIGHT_SHADOW_DISTANCE", 4000.0f);
+            // A square of a fixed size seen from the sun, around the player (or the camera when the host doesn't give the
+            // player's position), so turning the camera never changes what the shadow map covers and its texels stay
+            // fixed in the world while it follows. A fit around the view frustum moved with every turn of the camera:
+            // shadows past its far end came and went, and on interpolated frames its texels crawled.
+            const float radius = std::max(ceilf(enhancementValue("RT64_LIGHT_SHADOW_RADIUS", 3000.0f) / 16.0f) * 16.0f, 16.0f);
             const float casterDistance = enhancementValue("RT64_LIGHT_SHADOW_CASTER_DISTANCE", 6000.0f);
-            const float k = std::max(sunScene->frustumSlope, 0.1f);
-            auto sphereRadius = [k](float distance, float center) {
-                return std::max(center, sqrtf((distance - center) * (distance - center) + (distance * k) * (distance * k)));
-            };
-
-            float centerDistance = std::min(shadowDistance * (1.0f + k * k) * 0.5f, shadowDistance);
-            float radius = sphereRadius(shadowDistance, centerDistance);
-
-            // Wide fields of view (VR) would make the sphere and the texels much bigger: the distance the shadows reach is
-            // shortened instead, as the radius grows linearly with it.
-            const float maxRadius = enhancementValue("RT64_LIGHT_SHADOW_MAX_RADIUS", 3000.0f);
-            if (radius > maxRadius) {
-                shadowDistance *= maxRadius / radius;
-                centerDistance = std::min(shadowDistance * (1.0f + k * k) * 0.5f, shadowDistance);
-                radius = sphereRadius(shadowDistance, centerDistance);
-            }
-
-            radius = ceilf(radius / 16.0f) * 16.0f;
-
-            const hlslpp::float3 center = sunScene->cameraPosition + sunScene->viewDirection * centerDistance;
+            const float maxFocusDistance = enhancementValue("RT64_RT_INDOOR_FOCUS_MAX_DISTANCE", 2500.0f);
+            const bool focusKnown = (float(sunScene->focusPosition.w) > 0.0f) && (length3(sunScene->focusPosition.xyz - sunScene->cameraPosition) < maxFocusDistance);
+            const hlslpp::float3 center = focusKnown ? sunScene->focusPosition.xyz : sunScene->cameraPosition;
             texelSize = computeStableShadowMatrix(sunScene->sunDirection, center, radius, casterDistance, mapSize,
                 sunScene->worldRight, sunScene->worldUp, sunScene->worldForward, sunScene->worldOrigin, shadowMatrix, depthRange);
         }

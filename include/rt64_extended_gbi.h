@@ -80,8 +80,13 @@
 #define G_EX_SETVERTEXSEGMENT_V1        0x000031
 #define G_EX_SETTEXCOORDWRAPPOINT_V1    0x000032
 #define G_EX_SETRECTASPECT_V1           0x000033
-#define G_EX_SETSHADOWONLY_V1           0x000034
+#define G_EX_SETSHADOWMODE_V1           0x000034
 #define G_EX_MAX                        0x000035
+
+// Shadow modes (gEXSetShadowMode).
+#define G_EX_SHADOW_NORMAL          0x0
+#define G_EX_SHADOW_ONLY            0x1
+#define G_EX_SHADOW_NONE            0x2
 
 #define G_EX_ORIGIN_NONE            0x800
 #define G_EX_ORIGIN_LEFT            0x0
@@ -580,12 +585,18 @@ typedef union {
         PARAM(aspect, 2, 0) \
     )
 
-// The triangles drawn while it's set only cast shadows (in the renderers that draw them): they aren't drawn on screen.
-// For geometry the game hides so it doesn't block the view, like walls and trees right in front of the camera.
-#define gEXSetShadowOnly(cmd, shadowOnly) \
+// How the triangles drawn while it's set take part in the shadows of the renderers that draw them.
+// G_EX_SHADOW_ONLY: they only cast shadows and aren't drawn on screen. For geometry the game hides so it doesn't block
+// the view (walls and trees right in front of the camera), or a body seen from inside it in first person.
+// G_EX_SHADOW_NONE: they're drawn but cast no shadows. For geometry drawn through a camera of its own, like a first
+// person viewmodel, which would cast its shadow in the wrong place of the world.
+// G_EX_SHADOW_NORMAL: back to drawing and casting shadows.
+#define gEXSetShadowMode(cmd, mode) \
     G_EX_COMMAND1(cmd, \
-        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_SETSHADOWONLY_V1, 24, 0), \
-        PARAM(shadowOnly, 1, 0) \
+        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_SETSHADOWMODE_V1, 24, 0), \
+        PARAM(mode, 2, 0) \
     )
+
+#define gEXSetShadowOnly(cmd, shadowOnly) gEXSetShadowMode(cmd, (shadowOnly) ? G_EX_SHADOW_ONLY : G_EX_SHADOW_NORMAL)
 
 #endif // RT64_EXTENDED_GBI

@@ -1076,8 +1076,8 @@ namespace RT64 {
         state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
     }
 
-    void RDP::setShadowOnly(bool shadowOnly) {
-        extended.drawExtendedFlags.shadowOnly = shadowOnly;
+    void RDP::setShadowMode(uint8_t shadowMode) {
+        extended.drawExtendedFlags.shadowMode = shadowMode;
         state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
     }
 

@@ -65,7 +65,7 @@ namespace RT64 {
         uint32_t forceUpscale2D : 1;
         uint32_t forceTrueBilerp : 2;
         uint32_t forceScaleLOD : 1;
-        uint32_t shadowOnly : 1;
+        uint32_t shadowMode : 2;
     };
 
     struct DrawCall {

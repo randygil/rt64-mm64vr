@@ -199,7 +199,7 @@ namespace RT64 {
         void forceUpscale2D(bool force);
         void forceTrueBilerp(uint8_t mode);
         void forceScaleLOD(bool force);
-        void setShadowOnly(bool shadowOnly);
+        void setShadowMode(uint8_t shadowMode);
         void clearExtended();
 
         // The expected size and order for the elements in each array are:

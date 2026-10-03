@@ -331,9 +331,9 @@ namespace RT64 {
             state->rdp->setRectAspect(aspect);
         }
 
-        void setShadowOnlyV1(State *state, DisplayList **dl) {
-            const uint8_t shadowOnly = (*dl)->p1(0, 1);
-            state->rdp->setShadowOnly(shadowOnly);
+        void setShadowModeV1(State *state, DisplayList **dl) {
+            const uint8_t shadowMode = (*dl)->p1(0, 2);
+            state->rdp->setShadowMode(shadowMode);
         }
 
         void noOpHook(State *state, DisplayList **dl) {
@@ -444,7 +444,7 @@ namespace RT64 {
             Map[G_EX_SETVERTEXSEGMENT_V1] = &setVertexSegmentV1;
             Map[G_EX_SETTEXCOORDWRAPPOINT_V1] = &setTexcoordWrapPointV1;
             Map[G_EX_SETRECTASPECT_V1] = &setRectAspectV1;
-            Map[G_EX_SETSHADOWONLY_V1] = &setShadowOnlyV1;
+            Map[G_EX_SETSHADOWMODE_V1] = &setShadowModeV1;
             MapInitialized = true;
         }
     }

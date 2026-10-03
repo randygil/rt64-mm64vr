@@ -241,6 +241,15 @@ namespace RT64 {
         // Position of the player given by the host in the space the geometry is drawn in (see
         // Application::setFocusPosition). W is 1 if it's known.
         hlslpp::float4 focusPosition = { 0.0f, 0.0f, 0.0f, 0.0f };
+
+        // The world basis and origin above belong to the game frame. A frame interpolated between two game frames draws
+        // the geometry between both cameras, so these follow it with the same weight (set for every frame drawn, see
+        // ProjectionProcessor). lerpWorldInterpolated is false when they're the ones of the game frame.
+        hlslpp::float3 lerpWorldUp = { 0.0f, 0.0f, 0.0f };
+        hlslpp::float3 lerpWorldRight = { 1.0f, 0.0f, 0.0f };
+        hlslpp::float3 lerpWorldForward = { 0.0f, 0.0f, 1.0f };
+        hlslpp::float4 lerpWorldOrigin = { 0.0f, 0.0f, 0.0f, 0.0f };
+        bool lerpWorldInterpolated = false;
         DebuggerRenderer debuggerRenderer;
         DebuggerCamera debuggerCamera;
         std::multimap<uint32_t, uint32_t> transformIdMap;

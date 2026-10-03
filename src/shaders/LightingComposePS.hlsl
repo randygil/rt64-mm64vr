@@ -280,9 +280,9 @@ float sampleShadow(LightingParams params, float3 position, float3 normal, float 
         lit /= 9.0f;
     }
 
-    // Fade out the shadows close to the edges of the shadow map.
-    const float2 edgeDistance = min(shadowUV, 1.0f - shadowUV);
-    const float edgeFade = saturate(min(edgeDistance.x, edgeDistance.y) * 20.0f);
+    // Fade out the shadows towards the edge of the circle the shadow map covers around the player, the same in every
+    // direction, so turning the camera doesn't change where they end.
+    const float edgeFade = saturate((1.0f - length(shadowUV * 2.0f - 1.0f)) * 8.0f);
     return lerp(1.0f, lit, edgeFade * params.shadowMapParams.z);
 }
 

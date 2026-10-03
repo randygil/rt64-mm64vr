@@ -2154,10 +2154,19 @@ namespace RT64 {
                     sceneDesc.pixelToClip = hlslpp::float4(pixelToClipX(1.0f) - pixelToClipX(0.0f), pixelToClipY(1.0f) - pixelToClipY(0.0f), pixelToClipX(0.0f), pixelToClipY(0.0f));
                     const float maxDepth = std::min(rspViewport.translate.z + rspViewport.scale.z, 1.0f);
                     sceneDesc.depthToClip = hlslpp::float4(1.0f / rspViewport.scale.z, -rspViewport.translate.z / rspViewport.scale.z, maxDepth * enhancementValue("RT64_LIGHT_BACKGROUND_DEPTH", 0.99995f), 0.0f);
-                    sceneDesc.worldRight = p.curWorkload->worldRight;
-                    sceneDesc.worldUp = p.curWorkload->worldUp;
-                    sceneDesc.worldForward = p.curWorkload->worldForward;
-                    sceneDesc.worldOrigin = p.curWorkload->worldOrigin;
+                    // On a frame interpolated between two game frames the basis of the world follows the geometry
+                    // (see Workload::lerpWorldUp), and the lights placed with the game frame's are moved along.
+                    const Workload &workload = *p.curWorkload;
+                    const bool lerpWorld = p.modTransformsValid && workload.lerpWorldInterpolated && (enhancementValue("RT64_LIGHT_LERP_WORLD", 1.0f) > 0.0f);
+                    sceneDesc.worldRight = lerpWorld ? workload.lerpWorldRight : workload.worldRight;
+                    sceneDesc.worldUp = lerpWorld ? workload.lerpWorldUp : workload.worldUp;
+                    sceneDesc.worldForward = lerpWorld ? workload.lerpWorldForward : workload.worldForward;
+                    sceneDesc.worldOrigin = lerpWorld ? workload.lerpWorldOrigin : workload.worldOrigin;
+                    sceneDesc.worldInterpolated = lerpWorld;
+                    sceneDesc.gameWorldRight = workload.worldRight;
+                    sceneDesc.gameWorldUp = workload.worldUp;
+                    sceneDesc.gameWorldForward = workload.worldForward;
+                    sceneDesc.gameWorldOrigin = workload.worldOrigin;
                     sceneDesc.skyHidden = p.curWorkload->skyBackgroundHint;
                     sceneDesc.focusPosition = p.curWorkload->focusPosition;
                     sceneDesc.lights = (proj.pointLightCount > 0) ? proj.pointLights.data() : nullptr;
@@ -2199,7 +2208,8 @@ namespace RT64 {
 
                 // Triangles the game only wants as shadow casters (gEXSetShadowOnly) are only drawn by the shadow pass
                 // of the enhanced lighting, and not at all without it.
-                const bool shadowOnly = call.callDesc.extendedFlags.shadowOnly;
+                const bool shadowOnly = (call.callDesc.extendedFlags.shadowMode == G_EX_SHADOW_ONLY);
+                const bool castsShadow = (call.callDesc.extendedFlags.shadowMode != G_EX_SHADOW_NONE);
                 renderIndices.instanceIndex = call.callDesc.callIndex;
                 renderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
                 renderIndices.rdpTileIndex = call.callDesc.tileIndex;
@@ -2408,7 +2418,9 @@ namespace RT64 {
                                 const uint32_t callInstanceIndex = uint32_t(instanceDrawCallVector.size());
                                 const bool alphaTested = otherMode.cvgXAlpha() || (otherMode.alphaCompare() != G_AC_NONE);
                                 const bool rspLit = call.callDesc.rspLit;
-                                lighting->addCaster(uint32_t(lightingSceneIndex), callInstanceIndex, alphaTested);
+                                if (castsShadow) {
+                                    lighting->addCaster(uint32_t(lightingSceneIndex), callInstanceIndex, alphaTested);
+                                }
 
                                 // Unlit cutouts are usually foliage drawn as flat cards.
                                 uint32_t gbufferFlags = 0;

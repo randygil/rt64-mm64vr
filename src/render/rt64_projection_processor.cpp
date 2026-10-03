@@ -15,6 +15,55 @@ namespace RT64 {
         matrix[3][0] *= aspectRatioScale;
     }
     
+    // The world basis of a workload interpolated like the geometry of the frame being drawn: the geometry has the camera
+    // applied, and its transforms are interpolated in that space, so the camera's position in the world moves linearly
+    // and its rotation turns between both game frames. A cut (a big jump of the camera) isn't interpolated.
+    static void interpolateWorldBasis(const Workload &prevWorkload, Workload &workload, float weight) {
+        workload.lerpWorldUp = workload.worldUp;
+        workload.lerpWorldRight = workload.worldRight;
+        workload.lerpWorldForward = workload.worldForward;
+        workload.lerpWorldOrigin = workload.worldOrigin;
+        workload.lerpWorldInterpolated = false;
+
+        const bool basesKnown = (float(hlslpp::dot(workload.worldUp, workload.worldUp)) > 0.5f) && (float(hlslpp::dot(prevWorkload.worldUp, prevWorkload.worldUp)) > 0.5f);
+        const bool originsKnown = (float(workload.worldOrigin.w) > 0.0f) && (float(prevWorkload.worldOrigin.w) > 0.0f);
+        if ((weight >= 1.0f) || !basesKnown || !originsKnown) {
+            return;
+        }
+
+        const float MinBasisDot = 0.7f;
+        if ((float(hlslpp::dot(prevWorkload.worldUp, workload.worldUp)) < MinBasisDot) || (float(hlslpp::dot(prevWorkload.worldRight, workload.worldRight)) < MinBasisDot) ||
+            (float(hlslpp::dot(prevWorkload.worldForward, workload.worldForward)) < MinBasisDot))
+        {
+            return;
+        }
+
+        // Position of the camera in the world.
+        auto cameraInWorld = [](const Workload &w) {
+            const hlslpp::float3 origin = w.worldOrigin.xyz;
+            return -hlslpp::float3(float(hlslpp::dot(origin, w.worldRight)), float(hlslpp::dot(origin, w.worldUp)), float(hlslpp::dot(origin, w.worldForward)));
+        };
+
+        const hlslpp::float3 prevCamera = cameraInWorld(prevWorkload);
+        const hlslpp::float3 curCamera = cameraInWorld(workload);
+        const float MaxCameraJump = 2000.0f;
+        if (float(hlslpp::length(curCamera - prevCamera)) > MaxCameraJump) {
+            return;
+        }
+
+        const hlslpp::float3 up = hlslpp::normalize(hlslpp::lerp(prevWorkload.worldUp, workload.worldUp, weight));
+        hlslpp::float3 right = hlslpp::lerp(prevWorkload.worldRight, workload.worldRight, weight);
+        right = hlslpp::normalize(right - up * float(hlslpp::dot(right, up)));
+        hlslpp::float3 forward = hlslpp::lerp(prevWorkload.worldForward, workload.worldForward, weight);
+        forward = hlslpp::normalize(forward - up * float(hlslpp::dot(forward, up)) - right * float(hlslpp::dot(forward, right)));
+        const hlslpp::float3 camera = hlslpp::lerp(prevCamera, curCamera, weight);
+        workload.lerpWorldUp = up;
+        workload.lerpWorldRight = right;
+        workload.lerpWorldForward = forward;
+        workload.lerpWorldOrigin = hlslpp::float4(-(right * float(camera.x) + up * float(camera.y) + forward * float(camera.z)), 1.0f);
+        workload.lerpWorldInterpolated = true;
+    }
+
     // ProjectionProcessor
 
     ProjectionProcessor::ProjectionProcessor() { }
@@ -39,6 +88,14 @@ namespace RT64 {
             drawData.prevViewTransforms = drawData.viewTransforms;
             drawData.prevProjTransforms = drawData.projTransforms;
             drawData.prevViewProjTransforms = drawData.viewProjTransforms;
+
+            const GameFrameMap::WorkloadMap &workloadMap = p.curFrame->frameMap.workloads[w];
+            if ((p.prevFrame != nullptr) && workloadMap.mapped && !workload.debuggerCamera.enabled) {
+                interpolateWorldBasis(p.workloadQueue->workloads[workloadMap.prevWorkloadIndex], workload, p.curFrameWeight);
+            }
+            else {
+                interpolateWorldBasis(workload, workload, 1.0f);
+            }
         }
 
         for (size_t s = 0; s < p.curFrame->perspectiveScenes.size(); s++) {

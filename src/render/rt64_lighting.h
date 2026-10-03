@@ -170,6 +170,14 @@ namespace RT64 {
         hlslpp::float3 worldForward;
         hlslpp::float4 worldOrigin;
 
+        // When the frame is interpolated between two game frames, the basis above follows the interpolated geometry, and
+        // these are the basis of the game frame the lights and the focus position were placed with.
+        bool worldInterpolated = false;
+        hlslpp::float3 gameWorldRight;
+        hlslpp::float3 gameWorldUp;
+        hlslpp::float3 gameWorldForward;
+        hlslpp::float4 gameWorldOrigin;
+
         // Lights estimated for the projection.
         const interop::PointLight *lights = nullptr;
         uint32_t lightCount = 0;
