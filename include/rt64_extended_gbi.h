@@ -81,7 +81,12 @@
 #define G_EX_SETTEXCOORDWRAPPOINT_V1    0x000032
 #define G_EX_SETRECTASPECT_V1           0x000033
 #define G_EX_SETSHADOWMODE_V1           0x000034
-#define G_EX_MAX                        0x000035
+#define G_EX_SETCUTOUTMODE_V1           0x000035
+#define G_EX_MAX                        0x000036
+
+// Cutout modes (gEXSetCutoutMode).
+#define G_EX_CUTOUT_AUTO            0x0
+#define G_EX_CUTOUT_SOLID           0x1
 
 // Shadow modes (gEXSetShadowMode).
 #define G_EX_SHADOW_NORMAL          0x0
@@ -598,5 +603,15 @@ typedef union {
     )
 
 #define gEXSetShadowOnly(cmd, shadowOnly) gEXSetShadowMode(cmd, (shadowOnly) ? G_EX_SHADOW_ONLY : G_EX_SHADOW_NORMAL)
+
+// What the alpha tested triangles drawn while it's set are, for the renderers that light them.
+// G_EX_CUTOUT_AUTO: the renderer decides (the enhanced lighting treats unlit textured cutouts as foliage cards).
+// G_EX_CUTOUT_SOLID: they're part of solid models (a character's face with transparent corners, cloth, fences), so
+// they're lit like any other surface and get smooth normals with the rest of the model.
+#define gEXSetCutoutMode(cmd, mode) \
+    G_EX_COMMAND1(cmd, \
+        PARAM(RT64_EXTENDED_OPCODE, 8, 24) | PARAM(G_EX_SETCUTOUTMODE_V1, 24, 0), \
+        PARAM(mode, 1, 0) \
+    )
 
 #endif // RT64_EXTENDED_GBI

@@ -200,6 +200,7 @@ namespace RT64 {
         void forceTrueBilerp(uint8_t mode);
         void forceScaleLOD(bool force);
         void setShadowMode(uint8_t shadowMode);
+        void setCutoutMode(uint8_t cutoutMode);
         void clearExtended();
 
         // The expected size and order for the elements in each array are:

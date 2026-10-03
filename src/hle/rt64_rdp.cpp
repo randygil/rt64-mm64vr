@@ -1081,6 +1081,11 @@ namespace RT64 {
         state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
     }
 
+    void RDP::setCutoutMode(uint8_t cutoutMode) {
+        extended.drawExtendedFlags.solidCutouts = (cutoutMode == G_EX_CUTOUT_SOLID);
+        state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
+    }
+
     void RDP::clearExtended() {
         extended.scissorLeftOriginStack[0] = G_EX_ORIGIN_NONE;
         extended.scissorRightOriginStack[0] = G_EX_ORIGIN_NONE;

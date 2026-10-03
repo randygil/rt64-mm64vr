@@ -336,6 +336,11 @@ namespace RT64 {
             state->rdp->setShadowMode(shadowMode);
         }
 
+        void setCutoutModeV1(State *state, DisplayList **dl) {
+            const uint8_t cutoutMode = (*dl)->p1(0, 1);
+            state->rdp->setCutoutMode(cutoutMode);
+        }
+
         void noOpHook(State *state, DisplayList **dl) {
             uint32_t magicNumber = (*dl)->p0(0, 24);
             if (magicNumber == RT64_HOOK_MAGIC_NUMBER) {
@@ -445,6 +450,7 @@ namespace RT64 {
             Map[G_EX_SETTEXCOORDWRAPPOINT_V1] = &setTexcoordWrapPointV1;
             Map[G_EX_SETRECTASPECT_V1] = &setRectAspectV1;
             Map[G_EX_SETSHADOWMODE_V1] = &setShadowModeV1;
+            Map[G_EX_SETCUTOUTMODE_V1] = &setCutoutModeV1;
             MapInitialized = true;
         }
     }

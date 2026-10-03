@@ -2417,6 +2417,8 @@ namespace RT64 {
                             else if (!copyMode && otherMode.zUpd() && (otherMode.zMode() != ZMODE_DEC) && !triangles.vertexTestZ && !triangles.scissor.isEmpty()) {
                                 const uint32_t callInstanceIndex = uint32_t(instanceDrawCallVector.size());
                                 const bool alphaTested = otherMode.cvgXAlpha() || (otherMode.alphaCompare() != G_AC_NONE);
+                                // Cutouts the game marks as part of solid models (gEXSetCutoutMode) aren't foliage cards.
+                                const bool solidCutout = alphaTested && call.callDesc.extendedFlags.solidCutouts;
                                 const bool rspLit = call.callDesc.rspLit;
                                 if (castsShadow) {
                                     lighting->addCaster(uint32_t(lightingSceneIndex), callInstanceIndex, alphaTested);
@@ -2426,7 +2428,7 @@ namespace RT64 {
                                 uint32_t gbufferFlags = 0;
                                 gbufferFlags |= alphaTested ? LIGHTING_GBUFFER_ALPHA_TESTED : 0;
                                 gbufferFlags |= rspLit ? LIGHTING_GBUFFER_RSP_LIT : 0;
-                                gbufferFlags |= (alphaTested && !rspLit && call.shaderDesc.flags.usesTexture0) ? LIGHTING_GBUFFER_FOLIAGE : 0;
+                                gbufferFlags |= (alphaTested && !solidCutout && !rspLit && call.shaderDesc.flags.usesTexture0) ? LIGHTING_GBUFFER_FOLIAGE : 0;
                                 gbufferFlags |= (!alphaTested && call.shaderDesc.flags.usesTexture0) ? LIGHTING_GBUFFER_BUMP : 0;
                                 if (!shadowOnly) {
                                     lighting->addGBufferDraw(uint32_t(lightingSceneIndex), callInstanceIndex, gbufferFlags);
@@ -2435,7 +2437,7 @@ namespace RT64 {
                                 // Geometry without lighting has no normals: smooth ones are computed from its faces. Large
                                 // draw calls are skipped as the cost grows with the square of the triangle count, and
                                 // consecutive ranges are merged to weld the models drawn in several calls.
-                                if (!shadowOnly && (lightingSmoothNormalAngle > 0.0f) && !rspLit && !alphaTested && (call.callDesc.triangleCount <= lightingSmoothNormalTriangles)) {
+                                if (!shadowOnly && (lightingSmoothNormalAngle > 0.0f) && !rspLit && (!alphaTested || solidCutout) && (call.callDesc.triangleCount <= lightingSmoothNormalTriangles)) {
                                     const uint32_t indexStart = call.meshDesc.faceIndicesStart;
                                     const uint32_t indexCount = call.callDesc.triangleCount * 3;
                                     if (!rspSmoothNormalVector.empty() && ((rspSmoothNormalVector.back().indexStart + rspSmoothNormalVector.back().indexCount) == indexStart) && ((rspSmoothNormalVector.back().indexCount + indexCount) <= (lightingSmoothNormalTriangles * 3))) {
