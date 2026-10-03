@@ -1076,6 +1076,11 @@ namespace RT64 {
         state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
     }
 
+    void RDP::setShadowOnly(bool shadowOnly) {
+        extended.drawExtendedFlags.shadowOnly = shadowOnly;
+        state->updateDrawStatusAttribute(DrawAttribute::ExtendedFlags);
+    }
+
     void RDP::clearExtended() {
         extended.scissorLeftOriginStack[0] = G_EX_ORIGIN_NONE;
         extended.scissorRightOriginStack[0] = G_EX_ORIGIN_NONE;

@@ -2196,6 +2196,10 @@ namespace RT64 {
             for (uint32_t d = 0; (d < proj.gameCallCount) && (globalCallIndex < p.maxGameCall); d++) {
                 const GameCall &call = proj.gameCalls[d];
                 bool lightingDeferredCall = false;
+
+                // Triangles the game only wants as shadow casters (gEXSetShadowOnly) are only drawn by the shadow pass
+                // of the enhanced lighting, and not at all without it.
+                const bool shadowOnly = call.callDesc.extendedFlags.shadowOnly;
                 renderIndices.instanceIndex = call.callDesc.callIndex;
                 renderIndices.faceIndicesStart = call.meshDesc.faceIndicesStart;
                 renderIndices.rdpTileIndex = call.callDesc.tileIndex;
@@ -2393,7 +2397,10 @@ namespace RT64 {
                         if ((lightingSceneIndex >= 0) && (instanceDrawCall.type == InstanceDrawCall::Type::IndexedTriangles)) {
                             const interop::OtherMode &otherMode = call.shaderDesc.otherMode;
                             const bool copyMode = (otherMode.cycleType() == G_CYC_COPY);
-                            lighting->addSceneRect(uint32_t(lightingSceneIndex), triangles.scissor);
+                            if (!shadowOnly) {
+                                lighting->addSceneRect(uint32_t(lightingSceneIndex), triangles.scissor);
+                            }
+
                             if (!copyMode && interop::Blender::usesAlphaBlend(otherMode)) {
                                 lightingDeferredCall = true;
                             }
@@ -2409,12 +2416,14 @@ namespace RT64 {
                                 gbufferFlags |= rspLit ? LIGHTING_GBUFFER_RSP_LIT : 0;
                                 gbufferFlags |= (alphaTested && !rspLit && call.shaderDesc.flags.usesTexture0) ? LIGHTING_GBUFFER_FOLIAGE : 0;
                                 gbufferFlags |= (!alphaTested && call.shaderDesc.flags.usesTexture0) ? LIGHTING_GBUFFER_BUMP : 0;
-                                lighting->addGBufferDraw(uint32_t(lightingSceneIndex), callInstanceIndex, gbufferFlags);
+                                if (!shadowOnly) {
+                                    lighting->addGBufferDraw(uint32_t(lightingSceneIndex), callInstanceIndex, gbufferFlags);
+                                }
 
                                 // Geometry without lighting has no normals: smooth ones are computed from its faces. Large
                                 // draw calls are skipped as the cost grows with the square of the triangle count, and
                                 // consecutive ranges are merged to weld the models drawn in several calls.
-                                if ((lightingSmoothNormalAngle > 0.0f) && !rspLit && !alphaTested && (call.callDesc.triangleCount <= lightingSmoothNormalTriangles)) {
+                                if (!shadowOnly && (lightingSmoothNormalAngle > 0.0f) && !rspLit && !alphaTested && (call.callDesc.triangleCount <= lightingSmoothNormalTriangles)) {
                                     const uint32_t indexStart = call.meshDesc.faceIndicesStart;
                                     const uint32_t indexCount = call.callDesc.triangleCount * 3;
                                     if (!rspSmoothNormalVector.empty() && ((rspSmoothNormalVector.back().indexStart + rspSmoothNormalVector.back().indexCount) == indexStart) && ((rspSmoothNormalVector.back().indexCount + indexCount) <= (lightingSmoothNormalTriangles * 3))) {
@@ -2436,7 +2445,7 @@ namespace RT64 {
                 // Determine to use the draw call either in the RT scene or the raster scene.
                 const uint32_t instanceIndex = static_cast<uint32_t>(instanceDrawCallVector.size());
 #           if RT_ENABLED
-                bool rtCall = instanceDrawCall.type == InstanceDrawCall::Type::Raytracing;
+                bool rtCall = (instanceDrawCall.type == InstanceDrawCall::Type::Raytracing) && !shadowOnly;
                 if (rtCall) {
                     // If the current scene is not compatible, we submit it before the raster scene.
                     if (!rtProjCompatible) {
@@ -2497,9 +2506,12 @@ namespace RT64 {
 
                     rtScene.instanceIndices.push_back(instanceIndex);
                 }
-                else 
+                else
 #           endif
-                if (lightingDeferredCall) {
+                if (shadowOnly) {
+                    // Only referenced by the shadow casters added above.
+                }
+                else if (lightingDeferredCall) {
                     lightingDeferred.push_back(instanceIndex);
                 }
                 else {

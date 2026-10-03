@@ -1075,7 +1075,8 @@ namespace RT64 {
 
         static const bool printScenes = (getenv("RT64_LIGHT_PRINT") != nullptr);
         static uint32_t printCounter = 0;
-        if (printScenes && ((printCounter++ % 120) == 0)) {
+        const uint32_t printInterval = std::max(uint32_t(enhancementValue("RT64_LIGHT_PRINT_INTERVAL", 120.0f)), 1U);
+        if (printScenes && ((printCounter++ % printInterval) == 0)) {
             for (uint32_t i = 0; i < uint32_t(scenes.size()); i++) {
                 const Scene &scene = scenes[i];
                 fprintf(stderr, "Lighting scene %u: rect %d %d %d %d, sun %d, camera %.1f %.1f %.1f, view %.2f %.2f %.2f, slope %.2f, depthToClip %.4f %.4f %.6f, casters %zu, texel %.2f\n",
